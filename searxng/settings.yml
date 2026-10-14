@@ -1,0 +1,11 @@
+use_default_settings: true
+
+server:
+  secret_key: "e8c5aec28f130211e855216fcaebeec334d468d2e92dc9e35db8b399c72100d5"
+  limiter: false
+  image_proxy: true
+
+search:
+  formats:
+    - html
+    - json   # required so JARVIS can read results

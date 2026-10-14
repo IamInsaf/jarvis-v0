@@ -1,0 +1,80 @@
+{
+  "theme": {
+    "background_color": "#080B10",
+    "card_background": "#121720",
+    "card_border": "#1A2333",
+    "accent_color": "#00FF88",
+    "text_color": "#E2E8F0",
+    "text_muted": "#64748B",
+    "alert_color": "#FF4A5A",
+    "cyan_color": "#00E5FF"
+  },
+  "branding": {
+    "company": "INZAF INDUSTRIES",
+    "greeting": "Good Morning, Boss.",
+    "subtitle": "SECURE INTERFACE // SYSTEM READY"
+  },
+  "animation_settings": {
+    "fade_in_speed_ms": 10,
+    "fade_in_step": 0.05,
+    "progress_step_delay": 0.3
+  },
+  "missions": [
+    {
+      "text": "Continue Olv Alpha",
+      "completed": true
+    },
+    {
+      "text": "Build something people need",
+      "completed": true
+    },
+    {
+      "text": "Push one GitHub commit",
+      "completed": true
+    },
+    {
+      "text": "Learn one new concept",
+      "completed": true
+    }
+  ],
+  "workspace_apps": [
+    {
+      "name": "VS Code",
+      "path": "code",
+      "websites": []
+    },
+    {
+      "name": "Cursor",
+      "path": "cursor",
+      "websites": []
+    },
+    {
+      "name": "Windows Terminal",
+      "path": "wt",
+      "websites": []
+    },
+    {
+      "name": "Google Chrome",
+      "path": "chrome",
+      "websites": [
+        "https://chat.openai.com",
+        "https://github.com",
+        "https://console.firebase.google.com"
+      ]
+    },
+    {
+      "name": "Spotify",
+      "path": "spotify",
+      "websites": []
+    }
+  ],
+  "projects": [],
+  "settings": {
+    "weather_api_key": "",
+    "weather_location": "London,UK",
+    "ai_model": "gemini-1.5-flash",
+    "enable_animations": true,
+    "startup_mode": "standard"
+  },
+  "plugins": []
+}

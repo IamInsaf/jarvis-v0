@@ -1,0 +1,10 @@
+numpy
+sounddevice
+openwakeword
+onnxruntime
+faster-whisper
+piper-tts
+ollama
+requests
+python-dotenv
+anthropic  # optional, only used if CLOUD_ENABLED=true

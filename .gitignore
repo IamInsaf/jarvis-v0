@@ -1,0 +1,7 @@
+.env
+data/
+voices/
+.venv/
+__pycache__/
+*.pyc
+.claude/

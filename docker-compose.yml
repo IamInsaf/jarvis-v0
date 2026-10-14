@@ -1,0 +1,9 @@
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    ports:
+      - "127.0.0.1:8080:8080"   # bound to localhost only, not exposed to your network
+    volumes:
+      - ./searxng:/etc/searxng
+    restart: unless-stopped
