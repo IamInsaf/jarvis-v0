@@ -8,6 +8,7 @@ from pathlib import Path
 
 import config
 import llm
+import messaging
 
 # category -> (what it covers, for the router; tool names it may use; extra rules for the main call)
 CATEGORIES = {
@@ -40,6 +41,10 @@ CATEGORIES = {
                  "build_website starts a new site, change_website changes an existing one. Both run in the "
                  "background: tell the user it has started and that you'll say when it's ready — never that "
                  "it's finished.\nOnly use engine 'claude' when the user asked for Claude."),
+    "messages": ("texting or messaging someone (WhatsApp), or saving, listing or deleting someone's phone number",
+                 ["send_message", "save_contact", "list_contacts", "forget_contact"],
+                 "send_message reads the message back and asks before sending; never say a message was sent "
+                 "unless send_message said so."),
     "apps": ("opening or launching an application or program on this computer", ["open_app"],
              "Call open_app to open an app. Never say an app opened unless open_app said so."),
     "skills": ("the user asks you to learn, add or build a new ability, or to remove a learned one",
@@ -85,6 +90,9 @@ def route(user_text: str, previous: str, plugins: dict) -> str | None:
     projects = _site_projects()
     if _SITE_JOB.search(user_text) or any(_project_named(p, user_text) for p in projects):
         return "websites"
+    # "text my mom: ..." and "mom's number is ..." are unmistakable; "mom's number" went to memory
+    if messaging.SEND.match(user_text) or messaging.SAVE.search(user_text):
+        return "messages"
     cats = {name: desc for name, (desc, _, _) in CATEGORIES.items()}
     if projects:
         cats["websites"] += f" (projects so far: {', '.join(projects)})"

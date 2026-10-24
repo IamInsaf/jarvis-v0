@@ -36,10 +36,11 @@ _TOOL_TEXT = re.compile(r"<tool_call>.*?(?:</tool_call>|$)", re.S)
 _ARG_ALIASES = {"name": "what_to_call_it", "title": "what_to_call_it"}
 # tools that act, so a second call in the same turn is the model looping (a duplicate ability, a second timer)
 _ONCE_PER_TURN = {"add_feature", "remove_feature", "set_timer", "set_alarm", "set_reminder", "cancel_schedule",
-                  "forget", "build_website", "change_website", "open_app"}
+                  "forget", "build_website", "change_website", "open_app", "send_message", "save_contact",
+                  "forget_contact"}
 # tools whose result is already the sentence to speak, so it's said as is rather than reworded
 _SAY_AS_IS = {"open_app", "build_website", "change_website", "show_website", "stop_website", "list_websites",
-              "list_workspace"}
+              "list_workspace", "send_message", "save_contact", "list_contacts", "forget_contact"}
 # an explicit "remember this" / "note that" / "don't forget" — not a question like "do you remember"
 _REMEMBER_ASK = re.compile(r"\b(?:remember|note|save) (?:this|that)\b|^\s*remember\b|\bdon'?t forget\b", re.I)
 _REMEMBER_TAIL = re.compile(r"^\s*(?:remember|don'?t forget)(?: that)?\s*,?\s*|[\s,.!-]*\b(?:(?:please|ok(?:ay)?|jarvis)"
@@ -132,6 +133,8 @@ class Brain:
                           "tool_calls": [{"function": {"name": name, "arguments": args}}]},
                          {"role": "tool", "content": result, "tool_name": name}]
             if not learned and result.rstrip().endswith("?"):  # "What should I call the folder?" waits for the user
+                break
+            if name in _SAY_AS_IS:  # one per turn: after saving mom's number it sent her a message nobody said
                 break
 
         results = [m["content"] for m in messages[turn_start:] if m["role"] == "tool"]

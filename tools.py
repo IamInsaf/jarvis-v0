@@ -14,6 +14,7 @@ import rules
 import selfcode
 import timezones
 from files import Workspace
+from messaging import Messenger
 from scheduler import Scheduler
 from sitebuilder import Builder
 
@@ -42,6 +43,7 @@ class Tools:
         self.speaker = None  # set by Brain.think() before each call; None = unrecognized/general
         self.user_text = ""  # the request being handled, also set by Brain.think()
         self.builder = Builder(confirm, speak)
+        self.messenger = Messenger(config.DB_PATH, confirm)
         self.ctx = PluginContext(memory, confirm, speak)
         self.scheduler = Scheduler(config.DB_PATH, speak)
         self.plugins = {}  # tool name -> loaded module
@@ -92,6 +94,13 @@ class Tools:
             _fn("list_websites", "List the website projects and which are running.", {}),
             _fn("open_app", "Open an application on this computer ('open notepad', 'launch chrome').",
                 {"name": "the app's name as the user said it"}),
+            _fn("send_message", "Text someone on WhatsApp ('text my mom: I'll be late'). Reads it back and asks "
+                "before sending.",
+                {"contact": "who to text, e.g. 'mom' or 'John'", "message": "what to say, as the user said it"}),
+            _fn("save_contact", "Save someone's phone number for texting ('mom's number is plus 94...').",
+                {"name": "whose number, e.g. 'mom'", "number": "the phone number as the user said it"}),
+            _fn("list_contacts", "Say whose phone numbers you have saved.", {}),
+            _fn("forget_contact", "Delete a saved phone number, when the user asks.", {"name": "whose number"}),
             _fn("ask_cloud_expert",
                 "Ask a stronger cloud model a HARD general reasoning or coding question. "
                 "Never include names, contacts, locations or other personal details.",
@@ -196,6 +205,14 @@ class Tools:
                 return self.builder.projects()
             if name == "open_app":
                 return apps.open_app(args["name"])
+            if name == "send_message":
+                return self.messenger.send(args.get("contact", ""), args.get("message", ""), self.user_text)
+            if name == "save_contact":
+                return self.messenger.save_contact(args.get("name", ""), args.get("number", ""), self.user_text)
+            if name == "list_contacts":
+                return self.messenger.contacts()
+            if name == "forget_contact":
+                return self.messenger.forget_contact(args["name"])
             if name == "ask_cloud_expert":
                 return router.ask_cloud(args["question"], self.confirm)
             if name == "add_feature":
