@@ -24,28 +24,36 @@ def run_text(memory):
 def run_voice(memory):
     from ears import Ears
     from mouth import Mouth
+    from voice_id import VoiceID
 
-    ears, mouth = Ears(), Mouth()
+    ears = Ears()
+    mouth = Mouth(ears)  # saying "jarvis" again mid-reply interrupts it and wakes it early
+    voice_id = VoiceID()
 
     def confirm(q):
         mouth.say(q)
-        reply = ears.listen().lower()
+        reply, _ = ears.listen()
+        reply = reply.lower()
         print(f"YOU: {reply}")
         return any(w in reply for w in ("yes", "yeah", "sure", "go ahead", "do it"))
 
     brain = Brain(memory, confirm, mouth.say)
     mouth.say(f"Online and ready, {config.USER_TITLE}.")
+    woken = False
     while True:
-        ears.wait_for_wake_word()
+        if not woken:
+            ears.wait_for_wake_word()
+        woken = False
         mouth.say(f"Yes, {config.USER_TITLE}?")
-        text = ears.listen()
+        text, audio = ears.listen()
         if not text:
             continue
-        print(f"YOU: {text}")
+        speaker, score = voice_id.identify(audio) if audio is not None else ("unknown", 0.0)
+        print(f"YOU ({speaker} {score:.2f}): {text}")
         if text.lower().strip(" .!?") in SLEEP_WORDS:
             mouth.say(f"Going quiet, {config.USER_TITLE}. Say my name when you need me.")
             continue
-        mouth.say(brain.think(text))
+        woken = mouth.say(brain.think(text, speaker=speaker))
 
 
 if __name__ == "__main__":

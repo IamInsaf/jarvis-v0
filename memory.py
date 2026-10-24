@@ -1,8 +1,11 @@
 """Memory v0: durable facts + a conversation log in local SQLite.
 Upgrade path: add a vector DB (Qdrant/Chroma) for searching past conversations by meaning."""
 import os
+import re
 import sqlite3
 import time
+
+_WORD = re.compile(r"[a-z0-9]+")
 
 
 class Memory:
@@ -11,10 +14,15 @@ class Memory:
         self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.execute("CREATE TABLE IF NOT EXISTS facts(id INTEGER PRIMARY KEY, fact TEXT UNIQUE, created REAL)")
         self.db.execute("CREATE TABLE IF NOT EXISTS log(id INTEGER PRIMARY KEY, role TEXT, content TEXT, ts REAL)")
+        try:
+            self.db.execute("ALTER TABLE facts ADD COLUMN speaker TEXT")  # NULL = general/shared fact
+        except sqlite3.OperationalError:
+            pass  # already migrated
         self.db.commit()
 
-    def remember(self, fact: str) -> str:
-        self.db.execute("INSERT OR IGNORE INTO facts(fact, created) VALUES (?, ?)", (fact.strip(), time.time()))
+    def remember(self, fact: str, speaker: str | None = None) -> str:
+        self.db.execute("INSERT OR IGNORE INTO facts(fact, created, speaker) VALUES (?, ?, ?)",
+                         (fact.strip(), time.time(), speaker))
         self.db.commit()
         return "Saved."
 
@@ -29,9 +37,34 @@ class Memory:
         rows = self.db.execute(sql + " LIMIT 20", [f"%{w}%" for w in words]).fetchall()
         return "\n".join(r[0] for r in rows) or "Nothing stored about that."
 
-    def all_facts(self, limit: int = 50) -> list[str]:
-        rows = self.db.execute("SELECT fact FROM facts ORDER BY created DESC LIMIT ?", (limit,)).fetchall()
+    def all_facts(self, speaker: str | None = None, limit: int = 50) -> list[str]:
+        if speaker:
+            rows = self.db.execute(
+                "SELECT fact FROM facts WHERE speaker = ? OR speaker IS NULL ORDER BY created DESC LIMIT ?",
+                (speaker, limit)).fetchall()
+        else:
+            rows = self.db.execute("SELECT fact FROM facts ORDER BY created DESC LIMIT ?", (limit,)).fetchall()
         return [r[0] for r in rows]
+
+    def relevant_facts(self, query: str, speaker: str | None = None, k: int = 8) -> list[str]:
+        """Rank stored facts by word overlap with the query instead of dumping all of them.
+        `speaker`, when known, limits this to facts about them plus general/shared facts."""
+        q_words = {w for w in _WORD.findall(query.lower()) if len(w) > 2}
+        if not q_words:
+            return self.all_facts(speaker, k)
+        if speaker:
+            rows = self.db.execute(
+                "SELECT fact FROM facts WHERE speaker = ? OR speaker IS NULL ORDER BY created DESC LIMIT 200",
+                (speaker,)).fetchall()
+        else:
+            rows = self.db.execute("SELECT fact FROM facts ORDER BY created DESC LIMIT 200").fetchall()
+        scored = []
+        for (fact,) in rows:
+            overlap = len(q_words & set(_WORD.findall(fact.lower())))
+            if overlap:
+                scored.append((overlap, fact))
+        scored.sort(reverse=True)
+        return [f for _, f in scored[:k]] or self.all_facts(speaker, k)
 
     def log(self, role: str, content: str):
         self.db.execute("INSERT INTO log(role, content, ts) VALUES (?, ?, ?)", (role, content, time.time()))

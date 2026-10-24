@@ -44,6 +44,21 @@ class Ears:
             if max(scores.values()) >= config.WAKE_THRESHOLD:
                 return
 
+    def watch_for_wake_word(self, done) -> bool:
+        """Poll the mic for the wake word until `done()` is true (e.g. JARVIS has
+        finished speaking). Lets the user interrupt JARVIS mid-sentence by saying
+        its name again. Returns True if the wake word was heard."""
+        self.flush()
+        while not done():
+            try:
+                frame = self.q.get(timeout=0.08)
+            except queue.Empty:
+                continue
+            scores = self.wake.predict(frame)
+            if max(scores.values()) >= config.WAKE_THRESHOLD:
+                return True
+        return False
+
     def _record(self):
         frames, silent, started = [], 0.0, False
         t0, frame_sec = time.time(), FRAME / RATE
@@ -64,12 +79,13 @@ class Ears:
                 break
         return np.concatenate(frames)
 
-    def listen(self) -> str:
-        """Record one utterance and return the text ('' if nothing was said)."""
+    def listen(self) -> tuple[str, np.ndarray | None]:
+        """Record one utterance and return (text, audio). text is '' and audio is
+        None if nothing was said. audio is float32 at 16kHz, suitable for voice ID."""
         self.flush()
         audio = self._record()
         if audio is None:
-            return ""
-        segments, _ = self.stt.transcribe(audio.astype(np.float32) / 32768.0,
-                                          language="en", vad_filter=True, beam_size=1)
-        return " ".join(s.text.strip() for s in segments).strip()
+            return "", None
+        audio = audio.astype(np.float32) / 32768.0
+        segments, _ = self.stt.transcribe(audio, language="en", vad_filter=True, beam_size=1)
+        return " ".join(s.text.strip() for s in segments).strip(), audio

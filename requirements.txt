@@ -7,4 +7,5 @@ piper-tts
 ollama
 requests
 python-dotenv
+resemblyzer  # voice ID (speaker recognition); pulls in torch
 anthropic  # optional, only used if CLOUD_ENABLED=true

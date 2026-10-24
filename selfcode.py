@@ -85,7 +85,8 @@ def create_plugin(description: str, confirm, speak) -> str:
 
 
 def _draft_locally(prompt: str) -> str:
-    resp = ollama.chat(model=config.OLLAMA_MODEL, messages=[{"role": "user", "content": prompt}])
+    resp = ollama.chat(model=config.OLLAMA_MODEL, messages=[{"role": "user", "content": prompt}],
+                       options={"num_ctx": config.OLLAMA_NUM_CTX})
     return resp.message.content or ""
 
 
@@ -100,9 +101,17 @@ def _safety_check(code: str):
         if bad in code:
             return False, f"uses disallowed '{bad}'"
     for node in ast.walk(tree):
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            mod = (node.names[0].name if isinstance(node, ast.Import) else (node.module or "")).split(".")[0]
-            if mod not in _ALLOWED_IMPORTS:
+        # check every module on the line: `import json, os` must not slip os through
+        if isinstance(node, ast.Import):
+            mods = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:  # `from . import x` could reach other project files
+                return False, "relative imports are not allowed"
+            mods = [node.module or ""]
+        else:
+            continue
+        for mod in mods:
+            if mod.split(".")[0] not in _ALLOWED_IMPORTS:
                 return False, f"disallowed import '{mod}'"
     return True, ""
 

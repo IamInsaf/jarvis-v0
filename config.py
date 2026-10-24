@@ -10,11 +10,20 @@ HISTORY_TURNS = int(os.getenv("HISTORY_TURNS", "12"))    # conversation turns ke
 # 0 = deterministic. Local models skip tool calls (e.g. set_timer) much more often at
 # higher temperatures, so keep this low unless you don't rely on tools.
 OLLAMA_TEMPERATURE = float(os.getenv("OLLAMA_TEMPERATURE", "0"))
+# context window in tokens. Ollama's default is far below what qwen2.5 supports (32k) and it
+# silently drops the oldest text when full — including the system prompt and its rules.
+# Bigger costs more RAM/VRAM; lower it if the model gets slow or falls back to CPU.
+OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "8192"))
 
 # --- Ears ---
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small.en")   # tiny.en / base.en / small.en / medium.en
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "auto")     # auto / cpu / cuda
 WAKE_THRESHOLD = float(os.getenv("WAKE_THRESHOLD", "0.5"))
+VOICEPRINT_DIR = os.getenv("VOICEPRINT_DIR", "data/voiceprints")  # enrolled speaker voiceprints
+VOICE_ID_THRESHOLD = float(os.getenv("VOICE_ID_THRESHOLD", "0.75"))  # cosine similarity to match a speaker
+# short phrases score lower: keep a speaker recognized in the last few minutes down to this score
+VOICE_ID_SOFT_THRESHOLD = float(os.getenv("VOICE_ID_SOFT_THRESHOLD", "0.6"))
+VOICE_ID_STICKY_SECONDS = float(os.getenv("VOICE_ID_STICKY_SECONDS", "300"))
 SILENCE_RMS = float(os.getenv("SILENCE_RMS", "500"))     # raise if your room is noisy
 SILENCE_SECONDS = float(os.getenv("SILENCE_SECONDS", "0.9"))
 MAX_RECORD_SECONDS = float(os.getenv("MAX_RECORD_SECONDS", "15"))

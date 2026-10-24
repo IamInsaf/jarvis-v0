@@ -28,8 +28,10 @@ class Tools:
         self.memory = memory
         self.confirm = confirm
         self.speak = speak  # how to announce things that happen later (e.g. a timer firing)
+        self.speaker = None  # set by Brain.think() before each call; None = unrecognized/general
         self.ctx = PluginContext(memory, confirm, speak)
         self.plugins = {}  # tool name -> loaded module
+        self.plugin_paths = {}  # tool name -> its file (named after the description, not the tool)
         self._loaded_plugin_files = set()
         self.schemas = [
             _fn("get_time", "Current local date and time.", {}),
@@ -78,6 +80,7 @@ class Tools:
         if tool_name in self.plugins or any(s["function"]["name"] == tool_name for s in self.schemas):
             raise ValueError(f"tool name '{tool_name}' already exists")
         self.plugins[tool_name] = module
+        self.plugin_paths[tool_name] = path
         self.schemas.append(module.SCHEMA)
         return tool_name
 
@@ -86,10 +89,12 @@ class Tools:
         match = next((n for n in self.plugins if key in n or n in key), None)
         if not match:
             return f"No learned ability matching '{name}'."
-        (PLUGIN_DIR / f"{match}.py").unlink(missing_ok=True)
+        path = self.plugin_paths[match]
+        path.unlink(missing_ok=True)  # raises (and keeps the ability loaded) if Windows can't delete it
+        del self.plugin_paths[match]
         del self.plugins[match]
         self.schemas = [s for s in self.schemas if s["function"]["name"] != match]
-        self._loaded_plugin_files = {p for p in self._loaded_plugin_files if p.stem != match}
+        self._loaded_plugin_files.discard(path)
         return f"Removed the '{match}' ability."
 
     def run(self, name: str, args: dict) -> str:
@@ -99,7 +104,7 @@ class Tools:
             if name == "web_search":
                 return _search(args["query"])
             if name == "remember":
-                return self.memory.remember(args["fact"])
+                return self.memory.remember(args["fact"], speaker=self.speaker)
             if name == "recall":
                 return self.memory.recall(args["query"])
             if name == "forget":
