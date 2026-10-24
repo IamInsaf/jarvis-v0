@@ -1,11 +1,13 @@
 """Hands: the tools the brain can call. Add new abilities here (Home Assistant, files, Gmail...),
 or let JARVIS learn them itself via add_feature — see selfcode.py and plugins/."""
 import importlib.util
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import requests
 
+import apps
 import config
 import router
 import rules
@@ -13,8 +15,13 @@ import selfcode
 import timezones
 from files import Workspace
 from scheduler import Scheduler
+from sitebuilder import Builder
 
 PLUGIN_DIR = Path(__file__).parent / "plugins"
+# "use Claude" / "use your own ability" in the request decides who builds a website
+_USE_CLAUDE = re.compile(r"\b(?:use|using|with|via|ask|let|get) (?:claude|the cloud)\b|\bclaude (?:code|build|do)\b",
+                         re.I)
+_USE_OWN = re.compile(r"\b(?:your own|yourself|locally|local model|on your own|without claude)\b", re.I)
 
 
 class PluginContext:
@@ -33,6 +40,8 @@ class Tools:
         self.confirm = confirm
         self.speak = speak  # how to announce things that happen later (e.g. a timer firing)
         self.speaker = None  # set by Brain.think() before each call; None = unrecognized/general
+        self.user_text = ""  # the request being handled, also set by Brain.think()
+        self.builder = Builder(confirm, speak)
         self.ctx = PluginContext(memory, confirm, speak)
         self.scheduler = Scheduler(config.DB_PATH, speak)
         self.plugins = {}  # tool name -> loaded module
@@ -66,6 +75,23 @@ class Tools:
             _fn("list_workspace",
                 "Where JARVIS keeps the files and folders it creates (its working directory), "
                 "and what is in there.", {}),
+            _fn("build_website",
+                "Build a new website or web page and run it on this computer. engine: 'claude' when the "
+                "user says to use Claude, 'local' when they say to do it yourself or use your own ability, "
+                "otherwise 'auto'.",
+                {"description": "what the site should be and have, in the user's own words",
+                 "engine": "auto, local or claude"}),
+            _fn("change_website", "Change an existing website project ('make the header blue').",
+                {"project": "the project's name, empty string for the most recent one",
+                 "change": "the change, in the user's own words",
+                 "engine": "auto, local or claude"}),
+            _fn("show_website", "Run a website project on this computer and open it in the browser.",
+                {"project": "the project's name, empty string for the most recent one"}),
+            _fn("stop_website", "Stop a running website project.",
+                {"project": "the project's name, empty string for the most recent one"}),
+            _fn("list_websites", "List the website projects and which are running.", {}),
+            _fn("open_app", "Open an application on this computer ('open notepad', 'launch chrome').",
+                {"name": "the app's name as the user said it"}),
             _fn("ask_cloud_expert",
                 "Ask a stronger cloud model a HARD general reasoning or coding question. "
                 "Never include names, contacts, locations or other personal details.",
@@ -158,6 +184,18 @@ class Tools:
                 names = self.ctx.files.list()
                 return f"My workspace is {self.ctx.files.path()}. " + (
                     f"It contains: {', '.join(names)}." if names else "It's empty.")
+            if name == "build_website":
+                return self.builder.build(args["description"], self._engine(args.get("engine")))
+            if name == "change_website":
+                return self.builder.edit(args.get("project", ""), args["change"], self._engine(args.get("engine")))
+            if name == "show_website":
+                return self.builder.serve(args.get("project", ""))
+            if name == "stop_website":
+                return self.builder.stop(args.get("project", ""))
+            if name == "list_websites":
+                return self.builder.projects()
+            if name == "open_app":
+                return apps.open_app(args["name"])
             if name == "ask_cloud_expert":
                 return router.ask_cloud(args["question"], self.confirm)
             if name == "add_feature":
@@ -172,6 +210,15 @@ class Tools:
             return f"Unknown tool: {name}"
         except Exception as e:  # tools must never crash the loop
             return f"Tool {name} failed: {e}"
+
+    def _engine(self, said) -> str:
+        """Who builds: what the user said wins over the model's pick, which mixed the two up."""
+        if _USE_CLAUDE.search(self.user_text):
+            return "claude"
+        if _USE_OWN.search(self.user_text):
+            return "local"
+        said = str(said or "").lower().strip()
+        return said if said in ("local", "claude") else "auto"
 
     def _set_timer(self, args: dict) -> str:
         try:

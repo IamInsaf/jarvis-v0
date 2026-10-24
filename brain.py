@@ -36,7 +36,10 @@ _TOOL_TEXT = re.compile(r"<tool_call>.*?(?:</tool_call>|$)", re.S)
 _ARG_ALIASES = {"name": "what_to_call_it", "title": "what_to_call_it"}
 # tools that act, so a second call in the same turn is the model looping (a duplicate ability, a second timer)
 _ONCE_PER_TURN = {"add_feature", "remove_feature", "set_timer", "set_alarm", "set_reminder", "cancel_schedule",
-                  "forget"}
+                  "forget", "build_website", "change_website", "open_app"}
+# tools whose result is already the sentence to speak, so it's said as is rather than reworded
+_SAY_AS_IS = {"open_app", "build_website", "change_website", "show_website", "stop_website", "list_websites",
+              "list_workspace"}
 # an explicit "remember this" / "note that" / "don't forget" — not a question like "do you remember"
 _REMEMBER_ASK = re.compile(r"\b(?:remember|note|save) (?:this|that)\b|^\s*remember\b|\bdon'?t forget\b", re.I)
 _REMEMBER_TAIL = re.compile(r"^\s*(?:remember|don'?t forget)(?: that)?\s*,?\s*|[\s,.!-]*\b(?:(?:please|ok(?:ay)?|jarvis)"
@@ -74,6 +77,7 @@ class Brain:
         # an unrecognized voice gets unscoped facts (same as before voice ID existed);
         # a named one gets its own facts plus anything general/shared
         self.tools.speaker = None if speaker == "unknown" else speaker
+        self.tools.user_text = user_text
         user_msg = {"role": "user", "content": user_text}
 
         if match := rules.fast_path(user_text):
@@ -108,6 +112,10 @@ class Brain:
             name, args = step
             if name == "add_feature":  # the model's paraphrase tends to be its own reply, not the request
                 args = {"description": user_text}
+            elif name == "build_website":  # its paraphrase added "images and an order form" nobody asked for
+                args = {**args, "description": user_text}
+            elif name == "change_website":
+                args = {**args, "change": user_text}
             key = (name, json.dumps(args, sort_keys=True))
             if key in done or (name in called and name in _ONCE_PER_TURN) or _redo(name, args, done):
                 break
@@ -120,22 +128,28 @@ class Brain:
                 # learning it was only the means: the user asked for the thing itself, so do it now
                 learned = new.pop()
                 tools = [*tools, self.tools.plugins[learned].SCHEMA]
-            elif result.rstrip().endswith("?"):  # "What should I call the folder?" waits for the user, not a guess
-                break
             messages += [{"role": "assistant", "content": "",
                           "tool_calls": [{"function": {"name": name, "arguments": args}}]},
                          {"role": "tool", "content": result, "tool_name": name}]
+            if not learned and result.rstrip().endswith("?"):  # "What should I call the folder?" waits for the user
+                break
 
-        # it reported "alpha" created when the tool had made "create_folder_alpha": tie the reply to the results
-        final = messages + ([{"role": "system", "content": "Reply now. Say only what this turn's tool results say "
-                              "happened, with their exact names and paths, and say plainly if any part of the "
-                              "request wasn't done."}] if called else [])
-        msg = llm.client.chat(model=config.OLLAMA_MODEL, messages=final,
-                              options={"temperature": config.OLLAMA_TEMPERATURE, "num_ctx": config.OLLAMA_NUM_CTX,
-                                       "num_predict": llm.REPLY_TOKENS}).message
-        # with no tools on the final call, qwen sometimes writes a tool call out as text instead
-        answer = (_TOOL_TEXT.sub("", _THINK.sub("", msg.content or "")).strip()
-                  or f"I'm afraid I went in circles on that one, {config.USER_TITLE}.")
+        results = [m["content"] for m in messages[turn_start:] if m["role"] == "tool"]
+        if len(results) == 1 and called <= _SAY_AS_IS:
+            # these results are already a spoken sentence; reworded, "I couldn't find Spotify"
+            # came out as "Spotify has opened"
+            answer = results[0]
+        else:
+            # it reported "alpha" created when the tool had made "create_folder_alpha": tie the reply to the results
+            final = messages + ([{"role": "system", "content": "Reply now. Say only what this turn's tool results "
+                                  "say happened, with their exact names and paths, and say plainly if any part of "
+                                  "the request wasn't done."}] if called else [])
+            msg = llm.client.chat(model=config.OLLAMA_MODEL, messages=final,
+                                  options={"temperature": config.OLLAMA_TEMPERATURE,
+                                           "num_ctx": config.OLLAMA_NUM_CTX, "num_predict": llm.REPLY_TOKENS}).message
+            # with no tools on the final call, qwen sometimes writes a tool call out as text instead
+            answer = (_TOOL_TEXT.sub("", _THINK.sub("", msg.content or "")).strip()
+                      or f"I'm afraid I went in circles on that one, {config.USER_TITLE}.")
 
         # small local models often say "I'll remember that" without calling the tool; when the
         # user explicitly asked, save what they said ourselves so the promise is actually kept

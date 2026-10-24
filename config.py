@@ -50,5 +50,10 @@ DB_PATH = os.getenv("JARVIS_DB", "data/jarvis.db")
 # the one folder learned abilities may create, write and read files in (see files.py)
 WORKSPACE_DIR = os.path.expanduser(os.getenv("WORKSPACE_DIR", r"~\Documents\Jarvis"))
 
+# --- Website builder (sitebuilder.py) ---
+# "use Claude" builds run Claude Code; this caps what one build or change may spend
+CLAUDE_BUILD_BUDGET_USD = float(os.getenv("CLAUDE_BUILD_BUDGET_USD", "2"))
+CLAUDE_BUILD_TIMEOUT = float(os.getenv("CLAUDE_BUILD_TIMEOUT", "1800"))  # seconds
+
 # --- Personality ---
 USER_TITLE = os.getenv("USER_TITLE", "sir")

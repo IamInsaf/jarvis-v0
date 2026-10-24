@@ -4,6 +4,7 @@ reliable at "pick one of these" and much less so at "here are 15 tools, figure i
 (Not to be confused with router.py, which is the privacy gate for cloud calls.)"""
 import json
 import re
+from pathlib import Path
 
 import config
 import llm
@@ -28,12 +29,19 @@ CATEGORIES = {
             ["web_search", "get_time"],
             "Never guess about anything current: call web_search and answer from its results."),
     "files": ("creating, writing, reading or listing files and folders, or where you keep them "
-              "(your working directory), including follow-ups like 'add hello world to it'",
+              "(your working directory), including follow-ups like 'add hello world to it'. Not websites",
               ["list_workspace", "add_feature"],
               "list_workspace says where your files live and what's there. To create, write or read a file "
               "or folder with no tool for it yet, call add_feature with the user's request in their words.\n"
               "Never say you created, wrote or changed a file or folder unless a tool said so, and always "
               "give its full path."),
+    "websites": ("building, changing, showing, running or stopping a website, web page or web app project",
+                 ["build_website", "change_website", "show_website", "stop_website", "list_websites"],
+                 "build_website starts a new site, change_website changes an existing one. Both run in the "
+                 "background: tell the user it has started and that you'll say when it's ready — never that "
+                 "it's finished.\nOnly use engine 'claude' when the user asked for Claude."),
+    "apps": ("opening or launching an application or program on this computer", ["open_app"],
+             "Call open_app to open an app. Never say an app opened unless open_app said so."),
     "skills": ("the user asks you to learn, add or build a new ability, or to remove a learned one",
                ["add_feature", "remove_feature"],
                "To learn a new ability call add_feature; tell the user nothing is saved without their approval.\n"
@@ -49,6 +57,10 @@ CATEGORIES = {
 ABILITY_PREFIX = "use_"
 _SKILL_ASK = re.compile(r"\b(?:learn|teach|add|build|create|make|give yourself|remove|delete|forget|uninstall|"
                         r"get rid of)\b", re.I)
+_SITE_JOB = re.compile(r"\b(?:build|make|create|design|code|change|edit|update|fix|show|run|serve|stop|start)\b.*"
+                       r"\b(?:web ?sites?|web ?pages?|web apps?|landing pages?|portfolio(?: site)?)\b", re.I)
+_NOT_A_SKILL = re.compile(r"\b(?:web ?sites?|web ?pages?|web apps?|landing pages?|portfolio)\b|^\s*(?:open|launch)\b",
+                          re.I)
 _ABILITY_QUESTION = re.compile(r"^\s*(?:do|does|did|are|is|have|has)\s+you\b|\bare you able\b", re.I)
 
 _ROUTER = """Classify the user's latest message into exactly one category.
@@ -56,7 +68,8 @@ Categories:
 {categories}
 
 If a use_ category fits the request, pick it rather than chat. Requests to learn, add or remove an
-ability are always skills, even when they name an ability that already exists.
+ability are always skills, even when they name an ability that already exists. Building or changing
+a website, web page or web app is always websites, and opening an app is always apps.
 
 Previous exchange, for context only (e.g. "make it ten minutes" continues a timer):
 {previous}
@@ -67,17 +80,38 @@ Reply with JSON only, like {{"category": "chat"}}."""
 def route(user_text: str, previous: str, plugins: dict) -> str | None:
     """The category name, or None if the model didn't give a valid one (caller falls back to all tools).
     plugins: tool name -> loaded module, each offered as its own use_<name> category."""
+    # a site request or one naming an existing site project always goes to the website builder:
+    # "make a landing page" went to create_file, and "make the header blue on sweet crumbs" to web search
+    projects = _site_projects()
+    if _SITE_JOB.search(user_text) or any(_project_named(p, user_text) for p in projects):
+        return "websites"
     cats = {name: desc for name, (desc, _, _) in CATEGORIES.items()}
+    if projects:
+        cats["websites"] += f" (projects so far: {', '.join(projects)})"
     for name, m in plugins.items():
         cats[ABILITY_PREFIX + name] = "learned ability: " + m.SCHEMA["function"]["description"]
     category = _pick(user_text, previous, cats)
     # right after learning "flip a coin", the model sent the next "flip a coin" to skills again;
     # skills only makes sense when the user actually asks to learn or remove something
     # "do you have the ability to create files?" is a question, not a request to build one
-    if category == "skills" and (not _SKILL_ASK.search(user_text) or _ABILITY_QUESTION.search(user_text)):
+    # "build a website" says build, but it's a job for the website builder, not a new ability
+    if category == "skills" and (not _SKILL_ASK.search(user_text) or _ABILITY_QUESTION.search(user_text)
+                                 or _NOT_A_SKILL.search(user_text)):
         del cats["skills"]
         category = _pick(user_text, previous, cats)
     return category
+
+
+def _site_projects() -> list[str]:
+    sites = Path(config.WORKSPACE_DIR) / "sites"
+    return sorted(p.name for p in sites.iterdir() if p.is_dir()) if sites.is_dir() else []
+
+
+def _project_named(project: str, text: str) -> bool:
+    """'sweet-crumbs' is named in "make the header blue on sweet crumbs"."""
+    words = re.sub(r"[^a-z0-9]+", " ", project.lower()).split()
+    spoken = " " + re.sub(r"[^a-z0-9]+", " ", text.lower()) + " "
+    return bool(words) and f" {' '.join(words)} " in spoken
 
 
 def _pick(user_text: str, previous: str, cats: dict) -> str | None:
