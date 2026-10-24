@@ -1,9 +1,11 @@
 """Test-runs a drafted plugin in its own process (see selfcode._test_run):
     python -I plugin_harness.py <draft_plugin.py> <project dir>
-Prints {"result": ...} as the last line on success; exits non-zero with a traceback otherwise.
-ctx is a stand-in: memory writes go nowhere, speak prints, and confirm always answers no."""
+Prints {"result": ..., "created": [...]} as the last line on success; exits non-zero with a
+traceback otherwise. ctx is a stand-in: memory writes go nowhere, speak prints, confirm always
+answers no, and files work for real but in a throwaway workspace inside the test's own folder."""
 import importlib.util
 import json
+import os
 import sys
 
 
@@ -33,6 +35,9 @@ class _Ctx:
 
 def main(path: str, project_dir: str):
     sys.path.append(project_dir)  # so a plugin's `import config` works
+    from files import Workspace
+    workspace = Workspace(os.path.join(os.getcwd(), "Jarvis"), _Ctx.confirm)
+    _Ctx.files = workspace
     spec = importlib.util.spec_from_file_location("draft_plugin", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -52,7 +57,8 @@ def main(path: str, project_dir: str):
     result = module.run(args, _Ctx())
     if not isinstance(result, str) or not result.strip():
         raise TypeError(f"run() must return a non-empty string, got {result!r}")
-    print(json.dumps({"result": result.strip()}))
+    created = sorted({os.path.relpath(p, workspace.root) for p in workspace.created})
+    print(json.dumps({"result": result.strip(), "created": created}))
 
 
 if __name__ == "__main__":

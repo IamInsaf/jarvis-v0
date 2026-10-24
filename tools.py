@@ -11,6 +11,7 @@ import router
 import rules
 import selfcode
 import timezones
+from files import Workspace
 from scheduler import Scheduler
 
 PLUGIN_DIR = Path(__file__).parent / "plugins"
@@ -23,6 +24,7 @@ class PluginContext:
         self.memory = memory
         self.confirm = confirm
         self.speak = speak
+        self.files = Workspace(config.WORKSPACE_DIR, confirm)
 
 
 class Tools:
@@ -61,6 +63,9 @@ class Tools:
             _fn("list_schedule", "List the pending timers, alarms and reminders, with time left.", {}),
             _fn("cancel_schedule", "Cancel timers, alarms or reminders.",
                 {"which": "which ones, as the user said it, e.g. 'the tea timer', 'all alarms', 'my 7 am alarm'"}),
+            _fn("list_workspace",
+                "Where JARVIS keeps the files and folders it creates (its working directory), "
+                "and what is in there.", {}),
             _fn("ask_cloud_expert",
                 "Ask a stronger cloud model a HARD general reasoning or coding question. "
                 "Never include names, contacts, locations or other personal details.",
@@ -149,6 +154,10 @@ class Tools:
                 return self.scheduler.summary()
             if name == "cancel_schedule":
                 return self.scheduler.cancel(args["which"])
+            if name == "list_workspace":
+                names = self.ctx.files.list()
+                return f"My workspace is {self.ctx.files.path()}. " + (
+                    f"It contains: {', '.join(names)}." if names else "It's empty.")
             if name == "ask_cloud_expert":
                 return router.ask_cloud(args["question"], self.confirm)
             if name == "add_feature":

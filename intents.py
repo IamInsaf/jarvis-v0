@@ -27,12 +27,20 @@ CATEGORIES = {
     "web": ("news, weather, prices, sports, people, or anything current or that might have changed",
             ["web_search", "get_time"],
             "Never guess about anything current: call web_search and answer from its results."),
+    "files": ("creating, writing, reading or listing files and folders, or where you keep them "
+              "(your working directory)", ["list_workspace", "add_feature"],
+              "list_workspace says where your files live and what's there. To create, write or read a file "
+              "or folder with no tool for it yet, call add_feature with the user's request in their words.\n"
+              "Never say you created, wrote or changed a file or folder unless a tool said so, and always "
+              "give its full path."),
     "skills": ("the user asks you to learn, add or build a new ability, or to remove a learned one",
                ["add_feature", "remove_feature"],
                "To learn a new ability call add_feature; tell the user nothing is saved without their approval.\n"
                "To remove or forget a learned ability call remove_feature."),
     "chat": ("greetings, small talk, opinions, jokes, general knowledge, maths, explanations", [],
-             "Answer directly. If it needs current information you don't have, say you'd need to look it up."),
+             "Answer directly. If it needs current information you don't have, say you'd need to look it up.\n"
+             "You have no tools here: never say you did something (created, saved, sent, set) — offer to "
+             "learn it as a new ability instead."),
 }
 # each learned plugin becomes its own category, named after it: one "abilities" bucket made a
 # small model send "flip a coin" to chat when a coin-flip ability existed

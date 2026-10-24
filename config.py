@@ -46,5 +46,9 @@ ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5-5")
 # --- Memory ---
 DB_PATH = os.getenv("JARVIS_DB", "data/jarvis.db")
 
+# --- Files ---
+# the one folder learned abilities may create, write and read files in (see files.py)
+WORKSPACE_DIR = os.path.expanduser(os.getenv("WORKSPACE_DIR", r"~\Documents\Jarvis"))
+
 # --- Personality ---
 USER_TITLE = os.getenv("USER_TITLE", "sir")

@@ -39,6 +39,9 @@ _BANNED_ATTRS = {"os", "sys", "subprocess", "system", "popen", "spawn", "unlink"
 # results that mean the plugin caught its own error rather than working
 _FAILED_RESULT = re.compile(r"^\s*(?:error|failed|exception|traceback|an error|sorry, (?:an? )?error|"
                             r"could not|couldn't|unable to)\b", re.I)
+# an ability that should leave something on disk; its test must actually create or write it
+_FILE_JOB = re.compile(r"\b(?:create|make|new|write|save|add|append|put|store|log)\b.*"
+                       r"\b(?:files?|folders?|director(?:y|ies)|notes?|text|documents?|\.txt|lists?)\b", re.I)
 
 _CONTRACT = '''You are writing exactly one plugin file for a local Python voice assistant called JARVIS.
 Reply with ONLY raw Python source code. No markdown fences, no commentary before or after.
@@ -53,10 +56,22 @@ The file must define exactly these three names:
 - ctx.memory.remember(fact) / ctx.memory.recall(query) / ctx.memory.forget(text) — the user's durable facts
 - ctx.speak(text) — say something out loud
 - ctx.confirm(question) -> bool — ask the user yes/no before anything risky or irreversible
+- ctx.files — the user's JARVIS workspace folder, the ONLY way to touch files and folders.
+  Names are relative to the workspace, like "Nike" or "Nike/notes.txt". Each call that makes or changes
+  something returns the full path; put that path in your reply so the user can find it.
+  ctx.files.make_folder(name) -> path, ctx.files.write(name, text) -> path (asks before replacing a file),
+  ctx.files.append(name, text) -> path, ctx.files.read(name) -> str, ctx.files.exists(name) -> bool,
+  ctx.files.list(folder="") -> list of names (folders end with "/"), ctx.files.path(name="") -> full path.
+  They raise an exception with a readable message when something is wrong; catch it and say it.
 
 Hard rules:
+- Really do the job. Never only record in memory that something was done, and never claim success for
+  something the code didn't actually do — the test checks what really happened.
+- If the ability needs something ctx and the allowed modules can't do, reply with exactly one line
+  `CANNOT: <short reason>` instead of code.
 - Only these modules may be imported: requests, re, json, math, random, time, datetime, config.
-- No file access, no os/sys/subprocess, no eval/exec/getattr/open, no dunder attributes like __class__.
+- No file access except through ctx.files: no open, no os/sys/subprocess, no eval/exec/getattr,
+  no dunder attributes like __class__.
 - Make no network calls except via `requests` (with a timeout) to a public URL the request implies,
   preferably a free API that needs no key.
 - One self-contained file; do not reference any other plugin or project file.
@@ -96,6 +111,20 @@ def run(args: dict, ctx) -> str:
         return "That's more dice than I'm willing to roll."
     rolls = [random.randint(1, sides) for _ in range(count)]
     return f"You rolled {', '.join(map(str, rolls))}, for a total of {sum(rolls)}."
+
+And the body of a plugin that works with files (its SCHEMA and TEST_ARGS have the same shape as above):
+
+def run(args: dict, ctx) -> str:
+    name = str(args.get("name", "")).strip()
+    if not name:
+        return "What should I call the note?"
+    if "." not in name:
+        name += ".txt"
+    try:
+        path = ctx.files.append(name, str(args.get("text", "")) + "\\n")
+    except Exception as e:
+        return f"I couldn't write that note: {e}"
+    return f"Added that to {path}."
 '''
 
 
@@ -116,9 +145,15 @@ def create_plugin(description: str, confirm, speak, taken: set) -> str:
             return "The user declined sending this to the cloud, so nothing was drafted."
         chat.append({"role": "assistant", "content": code})
         code = _strip_fences(code)
+        cannot = re.match(r"\s*CANNOT:\s*(.+)", code)
+        if cannot:  # an honest "can't" beats a plugin that only pretends
+            return f"I can't build that with what I'm allowed to use: {cannot.group(1).strip()[:200]}"
         name, problem = _check(code, taken)
         if not problem:
-            result, problem = _test_run(code)
+            result, created, problem = _test_run(code)
+        if not problem and not created and _FILE_JOB.search(description):
+            problem = ("the test didn't create or write anything, but this ability is about files or folders. "
+                       "Do the real work with ctx.files.make_folder / write / append, not ctx.memory.")
         print(f"  [selfcode] attempt {attempt}: {problem or 'passed'}")
         if not problem:
             break
@@ -126,8 +161,9 @@ def create_plugin(description: str, confirm, speak, taken: set) -> str:
         return (f"I couldn't get a working version after {MAX_ATTEMPTS} tries (last problem: {problem}), "
                 "so nothing was saved.")
 
+    made = f" and it really created {', '.join(created[:5])} in a test folder" if created else ""
     if not confirm(f"I've built and tested a new ability called '{name.replace('_', ' ')}'. "
-                   f"In the test it said: '{result[:200]}'. Shall I keep it?"):
+                   f"In the test it said: '{result[:200]}'{made}. Shall I keep it?"):
         return "Declined — the new ability wasn't saved."
     path = PLUGIN_DIR / f"{name}.py"
     path.write_text(code, encoding="utf-8")
@@ -227,8 +263,9 @@ def _safety_check(code: str):
 
 
 def _test_run(code: str):
-    """(what run(TEST_ARGS) returned, "") or ("", what went wrong). Runs in its own Python process
-    with a timeout, from a throwaway folder, so a crash or hang can't touch JARVIS itself."""
+    """(what run(TEST_ARGS) returned, what it created in ctx.files, "") or ("", [], what went wrong).
+    Runs in its own Python process with a timeout, from a throwaway folder, so a crash or hang
+    can't touch JARVIS itself, and its files land in that folder rather than the real workspace."""
     with tempfile.TemporaryDirectory() as tmp:
         draft = Path(tmp) / "draft_plugin.py"
         draft.write_text(code, encoding="utf-8")
@@ -236,17 +273,18 @@ def _test_run(code: str):
             r = subprocess.run([sys.executable, "-I", str(HARNESS), str(draft), str(PROJECT_DIR)],
                                cwd=tmp, capture_output=True, text=True, timeout=TEST_TIMEOUT)
         except subprocess.TimeoutExpired:
-            return "", f"the test run took longer than {TEST_TIMEOUT} seconds"
+            return "", [], f"the test run took longer than {TEST_TIMEOUT} seconds"
     if r.returncode:
         err = (r.stderr or r.stdout).strip().splitlines()
-        return "", "test run crashed:\n" + "\n".join(err[-8:])  # the end of a traceback says the most
+        return "", [], "test run crashed:\n" + "\n".join(err[-8:])  # the end of a traceback says the most
     try:
-        result = json.loads(r.stdout.strip().splitlines()[-1])["result"]
+        out = json.loads(r.stdout.strip().splitlines()[-1])
+        result, created = out["result"], out.get("created", [])
     except (IndexError, ValueError, KeyError):
-        return "", f"the test run printed something unexpected: {r.stdout.strip()[-300:]}"
+        return "", [], f"the test run printed something unexpected: {r.stdout.strip()[-300:]}"
     if _FAILED_RESULT.match(result):
-        return "", f"run(TEST_ARGS) returned an error message instead of working: {result[:300]}"
-    return result, ""
+        return "", [], f"run(TEST_ARGS) returned an error message instead of working: {result[:300]}"
+    return result, created, ""
 
 
 def _try_load(path: Path):
