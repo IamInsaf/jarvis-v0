@@ -1,15 +1,17 @@
 """Hands: the tools the brain can call. Add new abilities here (Home Assistant, files, Gmail...),
 or let JARVIS learn them itself via add_feature — see selfcode.py and plugins/."""
 import importlib.util
-import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import requests
 
 import config
 import router
+import rules
 import selfcode
+import timezones
+from scheduler import Scheduler
 
 PLUGIN_DIR = Path(__file__).parent / "plugins"
 
@@ -30,6 +32,7 @@ class Tools:
         self.speak = speak  # how to announce things that happen later (e.g. a timer firing)
         self.speaker = None  # set by Brain.think() before each call; None = unrecognized/general
         self.ctx = PluginContext(memory, confirm, speak)
+        self.scheduler = Scheduler(config.DB_PATH, speak)
         self.plugins = {}  # tool name -> loaded module
         self.plugin_paths = {}  # tool name -> its file (named after the description, not the tool)
         self._loaded_plugin_files = set()
@@ -41,12 +44,23 @@ class Tools:
                 {"fact": "the fact, written as one short sentence"}),
             _fn("recall", "Search stored facts about the user.", {"query": "what to look for"}),
             _fn("forget", "Delete stored facts that match the text, when the user asks.", {"text": "text to match"}),
+            _fn("time_in", "Current time in another city or country.", {"place": "the city or country"}),
             _fn("set_timer",
-                "Set a timer that announces itself out loud when it ends. Use for any "
-                "'set a timer for X', 'remind me in X', or countdown request.",
-                {"seconds": "how many seconds from now the timer should run for",
+                "Start a countdown timer for a duration ('set a timer for 10 minutes'). "
+                "It announces itself out loud when it ends, even after a restart.",
+                {"seconds": "how many seconds the timer should run for",
                  "label": "short name for what the timer is for, empty string if none given"},
                 required=["seconds"]),
+            _fn("set_alarm", "Set an alarm for a clock time ('wake me at 7', 'alarm for 6:30 tomorrow').",
+                {"time": "the time exactly as the user said it, e.g. '7 am' or 'tomorrow at 6:30'",
+                 "label": "what the alarm is for, empty string if none given"},
+                required=["time"]),
+            _fn("set_reminder", "Remind the user about something at a time or after a duration.",
+                {"text": "what to remind them about, e.g. 'call mom'",
+                 "when": "exactly as the user said it, e.g. 'in 20 minutes', 'at 5 pm', 'tomorrow at 9'"}),
+            _fn("list_schedule", "List the pending timers, alarms and reminders, with time left.", {}),
+            _fn("cancel_schedule", "Cancel timers, alarms or reminders.",
+                {"which": "which ones, as the user said it, e.g. 'the tea timer', 'all alarms', 'my 7 am alarm'"}),
             _fn("ask_cloud_expert",
                 "Ask a stronger cloud model a HARD general reasoning or coding question. "
                 "Never include names, contacts, locations or other personal details.",
@@ -109,8 +123,18 @@ class Tools:
                 return self.memory.recall(args["query"])
             if name == "forget":
                 return self.memory.forget(args["text"])
+            if name == "time_in":
+                return timezones.time_in(args["place"])
             if name == "set_timer":
                 return self._set_timer(args)
+            if name == "set_alarm":
+                return self._set_at("alarm", args.get("label") or "", args["time"])
+            if name == "set_reminder":
+                return self._set_at("reminder", args["text"], args["when"])
+            if name == "list_schedule":
+                return self.scheduler.summary()
+            if name == "cancel_schedule":
+                return self.scheduler.cancel(args["which"])
             if name == "ask_cloud_expert":
                 return router.ask_cloud(args["question"], self.confirm)
             if name == "add_feature":
@@ -126,19 +150,26 @@ class Tools:
             return f"Tool {name} failed: {e}"
 
     def _set_timer(self, args: dict) -> str:
-        seconds = float(args["seconds"])
+        try:
+            seconds = float(args["seconds"])
+        except ValueError:  # the model sometimes passes "10 minutes" instead of 600
+            seconds = rules.timer_seconds(str(args["seconds"])) or 0
         if seconds <= 0:
             return "Timer needs a positive number of seconds."
         label = (args.get("label") or "").strip()
-        what = f"Your {label} timer" if label else "Your timer"
+        self.scheduler.add("timer", label, datetime.now() + timedelta(seconds=seconds))
+        return f"{label.capitalize() + ' timer' if label else 'Timer'} set for {rules.spoken_duration(seconds)}."
 
-        def fire():
-            self.speak(f"{what} is up, {config.USER_TITLE}.")
-
-        t = threading.Timer(seconds, fire)
-        t.daemon = True  # don't block program exit if one is still pending
-        t.start()
-        return f"{what} set for {seconds:g} seconds."
+    def _set_at(self, kind: str, label: str, when: str) -> str:
+        """An alarm or reminder at a spoken time; the parsing is done here, never by the model."""
+        found = rules.find_when(str(when))
+        if not found:
+            return f"I couldn't work out the time '{when}'. Ask the user for a clock time like '7 am'."
+        due = found[0]
+        self.scheduler.add(kind, label, due)
+        if kind == "alarm":
+            return f"Alarm set for {rules.spoken_clock(due)}" + (f" for {label}." if label else ".")
+        return f"I'll remind you {self.scheduler.describe(kind, label, due).removeprefix('a reminder ')}."
 
 
 def _fn(name, description, params, required=None):

@@ -7,5 +7,6 @@ piper-tts
 ollama
 requests
 python-dotenv
+tzdata  # timezone database for time_in (Windows has none built in)
 resemblyzer  # voice ID (speaker recognition); pulls in torch
 anthropic  # optional, only used if CLOUD_ENABLED=true

@@ -10,10 +10,14 @@ import config
 
 # category -> (what it covers, for the router; tool names it may use; extra rules for the main call)
 CATEGORIES = {
-    "time": ("the current time or date, or date arithmetic", ["get_time"],
-             "Always call get_time for the time or date — never state one from memory."),
-    "timer": ("setting a timer, countdown or reminder", ["set_timer", "get_time"],
-              "Call set_timer for the timer — never say one is set unless set_timer succeeded."),
+    "time": ("the current time or date here or in another place, or date arithmetic", ["get_time", "time_in"],
+             "Always call get_time or time_in for a time or date — never state one from memory or work out "
+             "a timezone yourself."),
+    "timer": ("timers, alarms, countdowns and reminders: setting, checking, listing or cancelling them",
+              ["set_timer", "set_alarm", "set_reminder", "list_schedule", "cancel_schedule"],
+              "set_timer is for a duration, set_alarm for a clock time, set_reminder for something to be "
+              "reminded about. Pass times exactly as the user said them — never convert them yourself.\n"
+              "Never say something is set or cancelled unless the tool said so."),
     "memory": ("the user shares something about themselves, says remember or forget, or asks what you "
                "know about them", ["remember", "recall", "forget"],
                "When the user shares something durable about themselves, or says \"remember\", call remember "
