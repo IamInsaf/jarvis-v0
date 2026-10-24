@@ -65,6 +65,10 @@ The file must define exactly these three names:
   They raise an exception with a readable message when something is wrong; catch it and say it.
 
 Hard rules:
+- Make it general and reusable: every specific value in the request (names, file names, text, numbers)
+  becomes an argument, and goes into TEST_ARGS — never hard-code them in run().
+- Describe a file or folder argument as a path that may include folders, e.g.
+  "file name, with its folder in front if it goes inside one, e.g. 'notes.txt' or 'projects/notes.txt'".
 - Really do the job. Never only record in memory that something was done, and never claim success for
   something the code didn't actually do — the test checks what really happened.
 - If the ability needs something ctx and the allowed modules can't do, reply with exactly one line
@@ -161,9 +165,11 @@ def create_plugin(description: str, confirm, speak, taken: set) -> str:
         return (f"I couldn't get a working version after {MAX_ATTEMPTS} tries (last problem: {problem}), "
                 "so nothing was saved.")
 
-    made = f" and it really created {', '.join(created[:5])} in a test folder" if created else ""
+    # what it made says more than its reply, which is full of the test folder's long temp path
+    tested = (f"In the test it created {', '.join(created[:5])}" if created
+              else f"In the test it said: '{result[:200]}'")
     if not confirm(f"I've built and tested a new ability called '{name.replace('_', ' ')}'. "
-                   f"In the test it said: '{result[:200]}'{made}. Shall I keep it?"):
+                   f"{tested}. Shall I keep it?"):
         return "Declined — the new ability wasn't saved."
     path = PLUGIN_DIR / f"{name}.py"
     path.write_text(code, encoding="utf-8")

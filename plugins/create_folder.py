@@ -6,7 +6,7 @@ SCHEMA = {
         "parameters": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "name of the folder, e.g. 'NewFolder'"}
+                "name": {"type": "string", "description": "folder name, with its parent folder in front if it goes inside one, e.g. 'NewFolder' or 'projects/NewFolder'"}
             },
             "required": ["name"]
         }

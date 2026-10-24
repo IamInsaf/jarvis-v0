@@ -1,11 +1,14 @@
 """JARVIS v0 — run `python jarvis.py` for voice, or `python jarvis.py --text` to test by typing."""
 import argparse
+import re
 
 import config
 from brain import Brain
 from memory import Memory
 
 SLEEP_WORDS = ("goodbye", "shut down", "go to sleep", "power down")
+YES = re.compile(r"\b(?:yes|yeah|yep|yup|sure|ok(?:ay)?|go ahead|do it|keep it|please|absolutely|of course)\b")
+NO = re.compile(r"\b(?:no|nope|nah|don'?t|do not|cancel|stop|never ?mind)\b")
 
 
 def run_text(memory):
@@ -32,10 +35,16 @@ def run_voice(memory):
 
     def confirm(q):
         mouth.say(q)
-        reply, _ = ears.listen()
-        reply = reply.lower()
-        print(f"YOU: {reply}")
-        return any(w in reply for w in ("yes", "yeah", "sure", "go ahead", "do it"))
+        for _ in range(3):  # silence or a mumble isn't a "no": ask again rather than throw work away
+            reply, _ = ears.listen(wait=8)  # a yes/no after a long question often takes a moment
+            reply = (reply or "").lower()
+            print(f"YOU: {reply}")
+            if NO.search(reply):  # first, so "don't keep it" isn't heard as "keep it"
+                return False
+            if YES.search(reply):
+                return True
+            mouth.say(f"Sorry {config.USER_TITLE}, was that a yes or a no?")
+        return False
 
     brain = Brain(memory, confirm, mouth.say)
     mouth.say(f"Online and ready, {config.USER_TITLE}.")

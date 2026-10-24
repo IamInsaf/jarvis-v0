@@ -6,7 +6,7 @@ SCHEMA = {
         "parameters": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "name of the file, e.g. 'note.txt'"},
+                "name": {"type": "string", "description": "file name, with its folder in front if it goes inside one, e.g. 'note.txt' or 'projects/note.txt'"},
                 "text": {"type": "string", "description": "content to write to the file"}
             },
             "required": ["name", "text"]

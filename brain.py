@@ -31,6 +31,9 @@ Known facts about the current speaker:
 {facts}"""
 
 _THINK = re.compile(r"<think>.*?</think>", re.S)
+_TOOL_TEXT = re.compile(r"<tool_call>.*?(?:</tool_call>|$)", re.S)
+# argument keys a small model reads as "the tool's name" -> what it's shown instead
+_ARG_ALIASES = {"name": "what_to_call_it", "title": "what_to_call_it"}
 # tools that act, so a second call in the same turn is the model looping (a duplicate ability, a second timer)
 _ONCE_PER_TURN = {"add_feature", "remove_feature", "set_timer", "set_alarm", "set_reminder", "cancel_schedule",
                   "forget"}
@@ -38,6 +41,18 @@ _ONCE_PER_TURN = {"add_feature", "remove_feature", "set_timer", "set_alarm", "se
 _REMEMBER_ASK = re.compile(r"\b(?:remember|note|save) (?:this|that)\b|^\s*remember\b|\bdon'?t forget\b", re.I)
 _REMEMBER_TAIL = re.compile(r"^\s*(?:remember|don'?t forget)(?: that)?\s*,?\s*|[\s,.!-]*\b(?:(?:please|ok(?:ay)?|jarvis)"
                             r"\s*,?\s*)*(?:remember|note|save) (?:this|that)\b.*$", re.I)
+
+
+def _redo(name: str, args: dict, done: set) -> bool:
+    """True if this call only repeats part of one already made this turn: after create_file('beta/notes.txt',
+    'buy milk') it went on to create_file('notes.txt', 'buy milk') as well."""
+    values = [str(v).lower() for v in args.values() if str(v).strip()]
+    for prev_name, prev_args in done:
+        if prev_name == name and values:
+            prev = [str(v).lower() for v in json.loads(prev_args).values()]
+            if all(any(v in p for p in prev) for v in values):
+                return True
+    return False
 
 
 class Brain:
@@ -81,33 +96,45 @@ class Brain:
         turn_start = len(messages) - 1
         called = set()
         done = set()  # (tool, args) already run this turn — never set the same timer twice
-        for _ in range(3):  # max tool rounds
+        learned = None  # an ability add_feature just saved, to run on the same request straight away
+        for _ in range(4):  # max tool rounds: learn an ability, then up to three steps of the request
             # free-form tool calling lets a small model just skip the tool ("Saved!" with nothing
             # saved), so the choice is a constrained JSON pick, then the arguments to fill in
             forced = (category.removeprefix(intents.ABILITY_PREFIX)
-                      if category and category.startswith(intents.ABILITY_PREFIX) and not called else None)
-            if not (step := self._next_tool(messages, tools, user_text, forced)):
+                      if category and category.startswith(intents.ABILITY_PREFIX) and not called else learned)
+            learned = None
+            if not (step := self._next_tool(messages, tools, user_text, forced, turn_start)):
                 break
             name, args = step
             if name == "add_feature":  # the model's paraphrase tends to be its own reply, not the request
                 args = {"description": user_text}
             key = (name, json.dumps(args, sort_keys=True))
-            if key in done or (name in called and name in _ONCE_PER_TURN):
+            if key in done or (name in called and name in _ONCE_PER_TURN) or _redo(name, args, done):
                 break
             done.add(key)
             print(f"  [tool] {name}({args})")
             called.add(name)
+            before = set(self.tools.plugins)
             result = self.tools.run(name, args)
+            if name == "add_feature" and (new := set(self.tools.plugins) - before):
+                # learning it was only the means: the user asked for the thing itself, so do it now
+                learned = new.pop()
+                tools = [*tools, self.tools.plugins[learned].SCHEMA]
+            elif result.rstrip().endswith("?"):  # "What should I call the folder?" waits for the user, not a guess
+                break
             messages += [{"role": "assistant", "content": "",
                           "tool_calls": [{"function": {"name": name, "arguments": args}}]},
                          {"role": "tool", "content": result, "tool_name": name}]
-            if forced:  # a learned ability runs once; a second round fed its own answer back in as input
-                break
 
-        msg = llm.client.chat(model=config.OLLAMA_MODEL, messages=messages,
+        # it reported "alpha" created when the tool had made "create_folder_alpha": tie the reply to the results
+        final = messages + ([{"role": "system", "content": "Reply now. Say only what this turn's tool results say "
+                              "happened, with their exact names and paths, and say plainly if any part of the "
+                              "request wasn't done."}] if called else [])
+        msg = llm.client.chat(model=config.OLLAMA_MODEL, messages=final,
                               options={"temperature": config.OLLAMA_TEMPERATURE, "num_ctx": config.OLLAMA_NUM_CTX,
                                        "num_predict": llm.REPLY_TOKENS}).message
-        answer = (_THINK.sub("", msg.content or "").strip()
+        # with no tools on the final call, qwen sometimes writes a tool call out as text instead
+        answer = (_TOOL_TEXT.sub("", _THINK.sub("", msg.content or "")).strip()
                   or f"I'm afraid I went in circles on that one, {config.USER_TITLE}.")
 
         # small local models often say "I'll remember that" without calling the tool; when the
@@ -121,9 +148,10 @@ class Brain:
         # the model sees past turns where it "set a timer" with words alone and starts copying that
         return self._finish(user_text, messages[turn_start:], answer)
 
-    def _next_tool(self, messages: list, tools: list, user_text: str, forced: str | None = None):
+    def _next_tool(self, messages: list, tools: list, user_text: str, forced: str | None = None, turn_start=1):
         """(tool name, args) to run next, or None when no (more) tools are needed.
-        forced: a tool the router already chose (a learned ability), so there's nothing left to pick."""
+        forced: a tool the router already chose (a learned ability), so there's nothing left to pick.
+        turn_start: where this turn begins in messages (after the system prompt and history)."""
         if not tools:
             return None
         by_name = {s["function"]["name"]: s["function"] for s in tools}
@@ -133,7 +161,8 @@ class Brain:
             menu = "\n".join(f"- {n}: {f['description']}" for n, f in by_name.items())
             pick = self._json(messages, f"Decide the next step. Tools you can run:\n{menu}\n"
                                         "Reply with the tool to run now, or \"none\" if no tool is needed or the "
-                                        "tool results above already answer the request.",
+                                        "tool results above already answer the request. Only pick a tool for a "
+                                        "part of the user's latest request that no tool result above has done yet.",
                               {"type": "object", "properties": {"tool": {"type": "string", "enum": [*by_name, "none"]}},
                                "required": ["tool"]})
             name = (pick or {}).get("tool")
@@ -144,10 +173,33 @@ class Brain:
             return name, {}
         # the JSON constraint only shapes the reply — the model never sees the schema's descriptions, so
         # they're spelled out here, and the request restated (it filled in "strings" and "group" without)
-        described = "\n".join(f"- {arg}: {p.get('description', '')}" for arg, p in params["properties"].items())
-        args = self._json(messages, f"The user's latest request: {user_text}\n"
-                                    f"Fill in the arguments for {name} ({by_name[name]['description']}):\n"
-                                    f"{described}", params)
+        # an argument called "name" got the tool's own name ('create_folder_alpha'), so such keys are
+        # shown to the model under a clearer alias and mapped back afterwards
+        alias = {arg: _ARG_ALIASES.get(arg, arg) for arg in params["properties"]}
+        shown = {**params, "properties": {alias[a]: p for a, p in params["properties"].items()},
+                 "required": [alias[a] for a in params.get("required", [])]}
+        described = "\n".join(f"- {alias[a]}: {p.get('description', '')}" for a, p in params["properties"].items())
+        previous = self._previous_exchange()
+        # only this turn, not the whole history: it copied values from earlier turns' calls, and
+        # filled a cut-off "create a folder named" with the schema's example 'NewFolder'
+        args = self._json([messages[0], *messages[turn_start:]],
+                          (f"Previous exchange, for context only:\n{previous}\n\n" if previous else "") +
+                          f"The user's latest request: {user_text}\n"
+                          f"Fill in the arguments for {name} ({by_name[name]['description']}):\n"
+                          f"{described}\n"
+                          "Use only values the user actually said (or clearly meant, like 'it' for the folder "
+                          "just made). For anything they didn't say, use an empty string — never make one up or "
+                          "copy an example. Something that goes inside a folder (one the user named, or one just "
+                          "created above) starts with that folder, like 'alpha/index.html'. If tool results above "
+                          "already did part of the request, fill these in for the part still left to do.", shown)
+        if args is not None:
+            back = {v: k for k, v in alias.items()}
+            args = {back.get(k, k): v for k, v in args.items()}
+            # a learned ability's test example the user never said ('NewFolder' for a cut-off
+            # "create a folder named") is a guess: blank it, and the ability asks instead
+            examples = getattr(self.tools.plugins.get(name), "TEST_ARGS", None) or {}
+            args = {k: ("" if k in examples and str(v) == str(examples[k]) and str(v).lower() not in user_text.lower()
+                        else v) for k, v in args.items()}
         if args is None:
             print(f"  [tool] {name}: couldn't get valid arguments")
         return (name, args) if args is not None else None

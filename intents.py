@@ -28,7 +28,8 @@ CATEGORIES = {
             ["web_search", "get_time"],
             "Never guess about anything current: call web_search and answer from its results."),
     "files": ("creating, writing, reading or listing files and folders, or where you keep them "
-              "(your working directory)", ["list_workspace", "add_feature"],
+              "(your working directory), including follow-ups like 'add hello world to it'",
+              ["list_workspace", "add_feature"],
               "list_workspace says where your files live and what's there. To create, write or read a file "
               "or folder with no tool for it yet, call add_feature with the user's request in their words.\n"
               "Never say you created, wrote or changed a file or folder unless a tool said so, and always "
@@ -39,14 +40,16 @@ CATEGORIES = {
                "To remove or forget a learned ability call remove_feature."),
     "chat": ("greetings, small talk, opinions, jokes, general knowledge, maths, explanations", [],
              "Answer directly. If it needs current information you don't have, say you'd need to look it up.\n"
-             "You have no tools here: never say you did something (created, saved, sent, set) — offer to "
-             "learn it as a new ability instead."),
+             "You have no tools here: never say you did or will do something (created, saved, sent, set, "
+             "\"I'll add it now\") — offer to learn it as a new ability instead. If an earlier reply of yours "
+             "claimed something that no tool result backs up, correct it plainly."),
 }
 # each learned plugin becomes its own category, named after it: one "abilities" bucket made a
 # small model send "flip a coin" to chat when a coin-flip ability existed
 ABILITY_PREFIX = "use_"
 _SKILL_ASK = re.compile(r"\b(?:learn|teach|add|build|create|make|give yourself|remove|delete|forget|uninstall|"
                         r"get rid of)\b", re.I)
+_ABILITY_QUESTION = re.compile(r"^\s*(?:do|does|did|are|is|have|has)\s+you\b|\bare you able\b", re.I)
 
 _ROUTER = """Classify the user's latest message into exactly one category.
 Categories:
@@ -70,7 +73,8 @@ def route(user_text: str, previous: str, plugins: dict) -> str | None:
     category = _pick(user_text, previous, cats)
     # right after learning "flip a coin", the model sent the next "flip a coin" to skills again;
     # skills only makes sense when the user actually asks to learn or remove something
-    if category == "skills" and not _SKILL_ASK.search(user_text):
+    # "do you have the ability to create files?" is a question, not a request to build one
+    if category == "skills" and (not _SKILL_ASK.search(user_text) or _ABILITY_QUESTION.search(user_text)):
         del cats["skills"]
         category = _pick(user_text, previous, cats)
     return category
@@ -102,9 +106,13 @@ def tools_for(category: str | None, schemas: list, plugins: dict) -> list:
     if category is None:
         return schemas
     if category.startswith(ABILITY_PREFIX):
-        names = {category.removeprefix(ABILITY_PREFIX)}
+        # the chosen ability runs first; the others stay on hand for the rest of a request
+        # like "make a folder and put a file in it", which needs two abilities in one go
+        names = {*plugins, "list_workspace"}
     else:
         names = set(CATEGORIES[category][1])
+        if category == "files":
+            names |= set(plugins)
         if category == "chat" and config.CLOUD_ENABLED:
             names.add("ask_cloud_expert")
     return [s for s in schemas if s["function"]["name"] in names]
@@ -113,7 +121,9 @@ def tools_for(category: str | None, schemas: list, plugins: dict) -> list:
 def rules_for(category: str | None) -> str:
     """Extra rules for the main call (all of them when routing failed)."""
     if category and category.startswith(ABILITY_PREFIX):
-        return f"Call {category.removeprefix(ABILITY_PREFIX)} for this request and answer from its result."
+        return (f"Call {category.removeprefix(ABILITY_PREFIX)} for this request; if the request has more parts, "
+                "call the right tool for each. Answer only from the tool results, and never say you did a part "
+                "that no tool did.")
     rules = "\n".join(r for _, _, r in CATEGORIES.values()) if category is None else CATEGORIES[category][2]
     if category in ("chat", None) and config.CLOUD_ENABLED:
         rules += ("\nUse ask_cloud_expert only for hard general reasoning or coding, and never put "

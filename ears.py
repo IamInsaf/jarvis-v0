@@ -59,7 +59,7 @@ class Ears:
                 return True
         return False
 
-    def _record(self):
+    def _record(self, wait: float):
         frames, silent, started = [], 0.0, False
         t0, frame_sec = time.time(), FRAME / RATE
         while True:
@@ -73,17 +73,17 @@ class Ears:
             elapsed = time.time() - t0
             if started and silent >= config.SILENCE_SECONDS:
                 break
-            if not started and elapsed > 5:      # nobody spoke
+            if not started and elapsed > wait:   # nobody spoke
                 return None
             if elapsed > config.MAX_RECORD_SECONDS:
                 break
         return np.concatenate(frames)
 
-    def listen(self) -> tuple[str, np.ndarray | None]:
+    def listen(self, wait: float = 5) -> tuple[str, np.ndarray | None]:
         """Record one utterance and return (text, audio). text is '' and audio is
-        None if nothing was said. audio is float32 at 16kHz, suitable for voice ID."""
+        None if nothing was said within `wait` seconds. audio is float32 at 16kHz, suitable for voice ID."""
         self.flush()
-        audio = self._record()
+        audio = self._record(wait)
         if audio is None:
             return "", None
         audio = audio.astype(np.float32) / 32768.0
