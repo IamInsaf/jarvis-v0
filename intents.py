@@ -3,10 +3,10 @@ main call only sees that category's few tools and rules instead of all of them. 
 reliable at "pick one of these" and much less so at "here are 15 tools, figure it out".
 (Not to be confused with router.py, which is the privacy gate for cloud calls.)"""
 import json
-
-import ollama
+import re
 
 import config
+import llm
 
 # category -> (what it covers, for the router; tool names it may use; extra rules for the main call)
 CATEGORIES = {
@@ -34,12 +34,18 @@ CATEGORIES = {
     "chat": ("greetings, small talk, opinions, jokes, general knowledge, maths, explanations", [],
              "Answer directly. If it needs current information you don't have, say you'd need to look it up."),
 }
-# filled in per request with the learned plugins, if there are any
-ABILITIES = "using one of these learned abilities: {}"
+# each learned plugin becomes its own category, named after it: one "abilities" bucket made a
+# small model send "flip a coin" to chat when a coin-flip ability existed
+ABILITY_PREFIX = "use_"
+_SKILL_ASK = re.compile(r"\b(?:learn|teach|add|build|create|make|give yourself|remove|delete|forget|uninstall|"
+                        r"get rid of)\b", re.I)
 
 _ROUTER = """Classify the user's latest message into exactly one category.
 Categories:
 {categories}
+
+If a use_ category fits the request, pick it rather than chat. Requests to learn, add or remove an
+ability are always skills, even when they name an ability that already exists.
 
 Previous exchange, for context only (e.g. "make it ten minutes" continues a timer):
 {previous}
@@ -49,11 +55,20 @@ Reply with JSON only, like {{"category": "chat"}}."""
 
 def route(user_text: str, previous: str, plugins: dict) -> str | None:
     """The category name, or None if the model didn't give a valid one (caller falls back to all tools).
-    plugins: tool name -> loaded module, offered as an extra "abilities" category."""
+    plugins: tool name -> loaded module, each offered as its own use_<name> category."""
     cats = {name: desc for name, (desc, _, _) in CATEGORIES.items()}
-    if plugins:
-        cats["abilities"] = ABILITIES.format("; ".join(
-            f"{name} ({m.SCHEMA['function']['description']})" for name, m in plugins.items()))
+    for name, m in plugins.items():
+        cats[ABILITY_PREFIX + name] = "learned ability: " + m.SCHEMA["function"]["description"]
+    category = _pick(user_text, previous, cats)
+    # right after learning "flip a coin", the model sent the next "flip a coin" to skills again;
+    # skills only makes sense when the user actually asks to learn or remove something
+    if category == "skills" and not _SKILL_ASK.search(user_text):
+        del cats["skills"]
+        category = _pick(user_text, previous, cats)
+    return category
+
+
+def _pick(user_text: str, previous: str, cats: dict) -> str | None:
     system = _ROUTER.format(categories="\n".join(f"- {n}: {d}" for n, d in cats.items()),
                             previous=previous or "(none)")
     schema = {"type": "object", "properties": {"category": {"type": "string", "enum": list(cats)}},
@@ -61,10 +76,11 @@ def route(user_text: str, previous: str, plugins: dict) -> str | None:
     for _ in range(2):  # constrained output almost never fails; one retry covers the rest
         try:
             # same num_ctx as the main call: a different one makes Ollama reload the whole model
-            resp = ollama.chat(model=config.OLLAMA_MODEL, format=schema,
-                               messages=[{"role": "system", "content": system},
-                                         {"role": "user", "content": user_text}],
-                               options={"temperature": 0, "num_ctx": config.OLLAMA_NUM_CTX})
+            resp = llm.client.chat(model=config.OLLAMA_MODEL, format=schema,
+                                   messages=[{"role": "system", "content": system},
+                                             {"role": "user", "content": user_text}],
+                                   options={"temperature": 0, "num_ctx": config.OLLAMA_NUM_CTX,
+                                            "num_predict": llm.JSON_TOKENS})
             category = json.loads(resp.message.content).get("category")
         except (json.JSONDecodeError, AttributeError):
             continue
@@ -77,8 +93,8 @@ def tools_for(category: str | None, schemas: list, plugins: dict) -> list:
     """The tool schemas the main call gets for this category (all of them when routing failed)."""
     if category is None:
         return schemas
-    if category == "abilities":
-        names = set(plugins)
+    if category.startswith(ABILITY_PREFIX):
+        names = {category.removeprefix(ABILITY_PREFIX)}
     else:
         names = set(CATEGORIES[category][1])
         if category == "chat" and config.CLOUD_ENABLED:
@@ -88,8 +104,8 @@ def tools_for(category: str | None, schemas: list, plugins: dict) -> list:
 
 def rules_for(category: str | None) -> str:
     """Extra rules for the main call (all of them when routing failed)."""
-    if category == "abilities":
-        return "Use the learned ability that fits the request."
+    if category and category.startswith(ABILITY_PREFIX):
+        return f"Call {category.removeprefix(ABILITY_PREFIX)} for this request and answer from its result."
     rules = "\n".join(r for _, _, r in CATEGORIES.values()) if category is None else CATEGORIES[category][2]
     if category in ("chat", None) and config.CLOUD_ENABLED:
         rules += ("\nUse ask_cloud_expert only for hard general reasoning or coding, and never put "

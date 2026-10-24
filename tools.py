@@ -85,6 +85,17 @@ class Tools:
                 self._loaded_plugin_files.add(path)
             except Exception as e:  # a broken plugin must never take the rest of JARVIS down
                 print(f"  [plugin] failed to load {path.name}: {e}")
+        self._refresh_removable()
+
+    def _refresh_removable(self):
+        """remove_feature's name can only be one of the learned abilities: left free, a small model
+        filled it with things like 'remove_feature'."""
+        param = next(s for s in self.schemas if s["function"]["name"] == "remove_feature")
+        name = param["function"]["parameters"]["properties"]["name"]
+        if self.plugins:
+            name["enum"] = sorted(self.plugins)
+        else:
+            name.pop("enum", None)
 
     def _load_plugin_file(self, path: Path) -> str:
         spec = importlib.util.spec_from_file_location(f"plugins.{path.stem}", path)
@@ -102,13 +113,16 @@ class Tools:
         key = name.strip().lower().replace(" ", "_")
         match = next((n for n in self.plugins if key in n or n in key), None)
         if not match:
-            return f"No learned ability matching '{name}'."
+            learned = ", ".join(n.replace("_", " ") for n in self.plugins) or "none yet"
+            return f"No learned ability matching '{name}'. Learned abilities: {learned}."
         path = self.plugin_paths[match]
         path.unlink(missing_ok=True)  # raises (and keeps the ability loaded) if Windows can't delete it
         del self.plugin_paths[match]
         del self.plugins[match]
         self.schemas = [s for s in self.schemas if s["function"]["name"] != match]
         self._loaded_plugin_files.discard(path)
+        self._refresh_removable()
+        selfcode.git_commit(path, f"Forget ability: {match}")  # git history can still bring it back
         return f"Removed the '{match}' ability."
 
     def run(self, name: str, args: dict) -> str:
@@ -138,7 +152,8 @@ class Tools:
             if name == "ask_cloud_expert":
                 return router.ask_cloud(args["question"], self.confirm)
             if name == "add_feature":
-                result = selfcode.create_plugin(args["description"], self.confirm, self.speak)
+                taken = {s["function"]["name"] for s in self.schemas}
+                result = selfcode.create_plugin(args["description"], self.confirm, self.speak, taken)
                 self._load_plugins()  # picks up the new one for this same session
                 return result
             if name == "remove_feature":
