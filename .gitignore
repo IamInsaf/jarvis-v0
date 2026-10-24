@@ -5,3 +5,4 @@ voices/
 __pycache__/
 *.pyc
 .claude/
+models/

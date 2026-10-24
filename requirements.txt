@@ -10,3 +10,5 @@ python-dotenv
 tzdata  # timezone database for time_in (Windows has none built in)
 resemblyzer  # voice ID (speaker recognition); pulls in torch
 anthropic  # optional, only used if CLOUD_ENABLED=true
+mediapipe  # webcam eyes: face mesh + hand gestures (debug_eyes.py, eyes.py)
+opencv-contrib-python  # camera capture; contrib, not opencv-python: mediapipe needs it and both clash over cv2
