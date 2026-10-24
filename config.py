@@ -31,6 +31,10 @@ VOICE_ID_STICKY_SECONDS = float(os.getenv("VOICE_ID_STICKY_SECONDS", "300"))
 SILENCE_RMS = float(os.getenv("SILENCE_RMS", "500"))     # raise if your room is noisy
 SILENCE_SECONDS = float(os.getenv("SILENCE_SECONDS", "0.9"))
 MAX_RECORD_SECONDS = float(os.getenv("MAX_RECORD_SECONDS", "15"))
+# after a reply, keep listening this long for a follow-up without the wake word (false = always need it)
+FOLLOW_UP = os.getenv("FOLLOW_UP", "true").lower() == "true"
+FOLLOW_UP_SECONDS = float(os.getenv("FOLLOW_UP_SECONDS", "5"))
+FOLLOW_UP_QUESTION_SECONDS = float(os.getenv("FOLLOW_UP_QUESTION_SECONDS", "10"))  # when the reply asked something
 
 # --- Mouth ---
 PIPER_VOICE = os.getenv("PIPER_VOICE", "voices/en_GB-alan-medium.onnx")

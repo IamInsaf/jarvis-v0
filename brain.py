@@ -40,7 +40,14 @@ _ONCE_PER_TURN = {"add_feature", "remove_feature", "set_timer", "set_alarm", "se
                   "forget_contact"}
 # tools whose result is already the sentence to speak, so it's said as is rather than reworded
 _SAY_AS_IS = {"open_app", "build_website", "change_website", "show_website", "stop_website", "list_websites",
-              "list_workspace", "send_message", "save_contact", "list_contacts", "forget_contact"}
+              "list_workspace", "send_message", "save_contact", "list_contacts", "forget_contact",
+              "add_task", "list_tasks", "complete_task", "remove_task"}
+# "start a new session" / "start over": forget this conversation (not the stored facts), so made-up
+# context from earlier turns stops leaking into new answers
+_NEW_SESSION = re.compile(r"(?:(?:ok(?:ay)?|jarvis|let'?s|please)[, ]+)*(?:start (?:a )?(?:new|fresh) "
+                          r"(?:session|conversation|chat)|new (?:session|conversation|chat)|start over|"
+                          r"fresh start|clear (?:the |our )?(?:conversation|chat|history)|reset(?: the)? conversation)",
+                          re.I)
 # an explicit "remember this" / "note that" / "don't forget" — not a question like "do you remember"
 _REMEMBER_ASK = re.compile(r"\b(?:remember|note|save) (?:this|that)\b|^\s*remember\b|\bdon'?t forget\b", re.I)
 _REMEMBER_TAIL = re.compile(r"^\s*(?:remember|don'?t forget)(?: that)?\s*,?\s*|[\s,.!-]*\b(?:(?:please|ok(?:ay)?|jarvis)"
@@ -79,6 +86,10 @@ class Brain:
         # a named one gets its own facts plus anything general/shared
         self.tools.speaker = None if speaker == "unknown" else speaker
         self.tools.user_text = user_text
+        if _NEW_SESSION.fullmatch(user_text.strip(" .!?,")):
+            self.history = []
+            print("  [session] conversation cleared")
+            return f"Fresh start, {config.USER_TITLE}. What can I do for you?"
         user_msg = {"role": "user", "content": user_text}
 
         if match := rules.fast_path(user_text):

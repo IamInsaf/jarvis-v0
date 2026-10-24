@@ -41,6 +41,10 @@ CATEGORIES = {
                  "build_website starts a new site, change_website changes an existing one. Both run in the "
                  "background: tell the user it has started and that you'll say when it's ready — never that "
                  "it's finished.\nOnly use engine 'claude' when the user asked for Claude."),
+    "tasks": ("the user's to-do list: adding, reading, ticking off or removing tasks or to-dos",
+              ["add_task", "list_tasks", "complete_task", "remove_task"],
+              "Only the to-do list tools know what's on the list: never list, count or claim tasks yourself. "
+              "Adding a task is just writing it down, not doing it."),
     "messages": ("texting or messaging someone (WhatsApp), or saving, listing or deleting someone's phone number",
                  ["send_message", "save_contact", "list_contacts", "forget_contact"],
                  "send_message reads the message back and asks before sending; never say a message was sent "
@@ -62,6 +66,8 @@ CATEGORIES = {
 ABILITY_PREFIX = "use_"
 _SKILL_ASK = re.compile(r"\b(?:learn|teach|add|build|create|make|give yourself|remove|delete|forget|uninstall|"
                         r"get rid of)\b", re.I)
+_TASK_TALK = re.compile(r"\b(?:to-?dos?|to do list|task ?list|tasks?)\b", re.I)
+_TIMER_TALK = re.compile(r"\b(?:timers?|alarms?|remind(?:er|ers)?)\b", re.I)
 _SITE_JOB = re.compile(r"\b(?:build|make|create|design|code|change|edit|update|fix|show|run|serve|stop|start)\b.*"
                        r"\b(?:web ?sites?|web ?pages?|web apps?|landing pages?|portfolio(?: site)?)\b", re.I)
 _NOT_A_SKILL = re.compile(r"\b(?:web ?sites?|web ?pages?|web apps?|landing pages?|portfolio)\b|^\s*(?:open|launch)\b",
@@ -87,6 +93,9 @@ def route(user_text: str, previous: str, plugins: dict) -> str | None:
     plugins: tool name -> loaded module, each offered as its own use_<name> category."""
     # a site request or one naming an existing site project always goes to the website builder:
     # "make a landing page" went to create_file, and "make the header blue on sweet crumbs" to web search
+    # before the site check: "add a task to complete the website" is a to-do, and it went to the builder
+    if _TASK_TALK.search(user_text) and not _TIMER_TALK.search(user_text):
+        return "tasks"
     projects = _site_projects()
     if _SITE_JOB.search(user_text) or any(_project_named(p, user_text) for p in projects):
         return "websites"

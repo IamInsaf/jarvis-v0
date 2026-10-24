@@ -17,6 +17,7 @@ from files import Workspace
 from messaging import Messenger
 from scheduler import Scheduler
 from sitebuilder import Builder
+from todos import Todos
 
 PLUGIN_DIR = Path(__file__).parent / "plugins"
 # "use Claude" / "use your own ability" in the request decides who builds a website
@@ -44,6 +45,7 @@ class Tools:
         self.user_text = ""  # the request being handled, also set by Brain.think()
         self.builder = Builder(confirm, speak)
         self.messenger = Messenger(config.DB_PATH, confirm)
+        self.todos = Todos(config.DB_PATH)
         self.ctx = PluginContext(memory, confirm, speak)
         self.scheduler = Scheduler(config.DB_PATH, speak)
         self.plugins = {}  # tool name -> loaded module
@@ -100,6 +102,14 @@ class Tools:
             _fn("save_contact", "Save someone's phone number for texting ('mom's number is plus 94...').",
                 {"name": "whose number, e.g. 'mom'", "number": "the phone number as the user said it"}),
             _fn("list_contacts", "Say whose phone numbers you have saved.", {}),
+            _fn("add_task", "Add one or more tasks to the user's to-do list.",
+                {"tasks": "the task, or several separated by semicolons, in the user's words without "
+                          "'add to my list'"}),
+            _fn("list_tasks", "Read out the user's to-do list (what's still to do).", {}),
+            _fn("complete_task", "Tick a task off the to-do list as done.",
+                {"which": "its number ('2', 'the second one') or some of its words"}),
+            _fn("remove_task", "Delete a task from the to-do list without doing it, or 'all' to clear it.",
+                {"which": "its number, some of its words, or 'all'"}),
             _fn("forget_contact", "Delete a saved phone number, when the user asks.", {"name": "whose number"}),
             _fn("ask_cloud_expert",
                 "Ask a stronger cloud model a HARD general reasoning or coding question. "
@@ -211,6 +221,14 @@ class Tools:
                 return self.messenger.save_contact(args.get("name", ""), args.get("number", ""), self.user_text)
             if name == "list_contacts":
                 return self.messenger.contacts()
+            if name == "add_task":
+                return self.todos.add(args.get("tasks") or self.user_text)
+            if name == "list_tasks":
+                return self.todos.list()
+            if name == "complete_task":
+                return self.todos.complete(args.get("which", ""))
+            if name == "remove_task":
+                return self.todos.remove(args.get("which", ""))
             if name == "forget_contact":
                 return self.messenger.forget_contact(args["name"])
             if name == "ask_cloud_expert":
