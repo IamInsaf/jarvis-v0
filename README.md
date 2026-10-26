@@ -25,6 +25,7 @@ mic → wake word → Whisper (local) → Ollama LLM (local) ⇄ tools → Piper
 | `memory.py` | SQLite facts + conversation log |
 | `router.py` | The only path to the cloud: redacts, asks permission |
 | `mouth.py` | Piper text-to-speech |
+| `fingers.py` | Type mode: dictate into any app (hold right Ctrl, or say "type mode start") |
 | `config.py` / `.env` | All settings |
 
 ## Setup (Windows, macOS or Linux)
@@ -64,6 +65,16 @@ python jarvis.py          # then voice: say "Hey Jarvis"
 
 Try: "Hey Jarvis, remember that I study mechanical engineering" → later "what do I study?"
 Try: "Hey Jarvis, what's the latest news on SpaceX?" (uses private search)
+
+## Type mode: dictate into any app (Windows)
+Like Wispr Flow, but offline and free: the same local Whisper types what you say wherever your cursor is.
+- **Hold right Ctrl**, speak, let go: it's typed at the cursor. Change the key with `TYPE_HOTKEY`
+  (`right alt`, `f8`, `ctrl+win`...) or turn it off with `TYPE_HOTKEY=off`.
+- **"Hey Jarvis" → "type mode start"**: every phrase is typed as you say it, until you say
+  **"type mode done"** (or stay quiet for `TYPE_IDLE_SECONDS`, 60 by default).
+- Say "new line" or "new paragraph" for line breaks.
+- The text is pasted (clipboard + Ctrl+V), which works in every app; whatever text you had copied is put back.
+- Click where the text should go first. Apps running as administrator need JARVIS run as administrator too.
 
 ## Self-upgrade: learning new abilities on the fly
 Ask for something JARVIS has no tool for ("Hey Jarvis, learn to flip a coin") and it calls

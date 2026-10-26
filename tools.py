@@ -96,6 +96,8 @@ class Tools:
             _fn("list_websites", "List the website projects and which are running.", {}),
             _fn("open_app", "Open an application on this computer ('open notepad', 'launch chrome').",
                 {"name": "the app's name as the user said it"}),
+            _fn("close_app", "Close an application that's open on this computer ('close chrome', 'quit notepad').",
+                {"name": "the app's name as the user said it"}),
             _fn("send_message", "Text someone on WhatsApp ('text my mom: I'll be late'). Reads it back and asks "
                 "before sending.",
                 {"contact": "who to text, e.g. 'mom' or 'John'", "message": "what to say, as the user said it"}),
@@ -215,6 +217,8 @@ class Tools:
                 return self.builder.projects()
             if name == "open_app":
                 return apps.open_app(args["name"])
+            if name == "close_app":
+                return apps.close_app(args["name"])
             if name == "send_message":
                 return self.messenger.send(args.get("contact", ""), args.get("message", ""), self.user_text)
             if name == "save_contact":

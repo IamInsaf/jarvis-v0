@@ -36,11 +36,11 @@ _TOOL_TEXT = re.compile(r"<tool_call>.*?(?:</tool_call>|$)", re.S)
 _ARG_ALIASES = {"name": "what_to_call_it", "title": "what_to_call_it"}
 # tools that act, so a second call in the same turn is the model looping (a duplicate ability, a second timer)
 _ONCE_PER_TURN = {"add_feature", "remove_feature", "set_timer", "set_alarm", "set_reminder", "cancel_schedule",
-                  "forget", "build_website", "change_website", "open_app", "send_message", "save_contact",
-                  "forget_contact"}
+                  "forget", "build_website", "change_website", "open_app", "close_app", "send_message",
+                  "save_contact", "forget_contact"}
 # tools whose result is already the sentence to speak, so it's said as is rather than reworded
-_SAY_AS_IS = {"open_app", "build_website", "change_website", "show_website", "stop_website", "list_websites",
-              "list_workspace", "send_message", "save_contact", "list_contacts", "forget_contact",
+_SAY_AS_IS = {"open_app", "close_app", "build_website", "change_website", "show_website", "stop_website",
+              "list_websites", "list_workspace", "send_message", "save_contact", "list_contacts", "forget_contact",
               "add_task", "list_tasks", "complete_task", "remove_task"}
 # "start a new session" / "start over": forget this conversation (not the stored facts), so made-up
 # context from earlier turns stops leaking into new answers

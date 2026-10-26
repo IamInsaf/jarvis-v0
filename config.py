@@ -36,6 +36,28 @@ FOLLOW_UP = os.getenv("FOLLOW_UP", "true").lower() == "true"
 FOLLOW_UP_SECONDS = float(os.getenv("FOLLOW_UP_SECONDS", "5"))
 FOLLOW_UP_QUESTION_SECONDS = float(os.getenv("FOLLOW_UP_QUESTION_SECONDS", "10"))  # when the reply asked something
 
+# --- Type mode (fingers.py): dictate into any app ---
+# hold to dictate, let go to type it at the cursor: "right ctrl", "right alt", "f8", "ctrl+win"... or "off"
+TYPE_HOTKEY = os.getenv("TYPE_HOTKEY", "right ctrl")
+TYPE_IDLE_SECONDS = float(os.getenv("TYPE_IDLE_SECONDS", "60"))  # voice type mode ends after this long silent
+
+# --- Eyes (webcam, see docs/webcam-gestures-plan.md; tune the numbers with debug_eyes.py) ---
+CAMERA_ENABLED = os.getenv("CAMERA_ENABLED", "false").lower() == "true"
+# open the camera as soon as JARVIS starts; false = keep it closed until you say "camera on"
+CAMERA_START_ON = os.getenv("CAMERA_START_ON", "false").lower() == "true"
+CAMERA_INDEX = int(os.getenv("CAMERA_INDEX", "0"))
+CAMERA_FPS = float(os.getenv("CAMERA_FPS", "12"))
+# facing the camera, hold a hand sign and speak: no name needed
+GESTURE_TO_TALK = os.getenv("GESTURE_TO_TALK", "true").lower() == "true"
+# facing the camera, plain "Jarvis" works (as the first word), not just "hey Jarvis"
+NAME_ON_CAMERA = os.getenv("NAME_ON_CAMERA", "true").lower() == "true"
+FACING_MAX_DEG = float(os.getenv("FACING_MAX_DEG", "25"))       # head yaw/pitch that still counts as facing
+FACING_HOLD_MS = float(os.getenv("FACING_HOLD_MS", "300"))
+MOUTH_MOVING_MIN = float(os.getenv("MOUTH_MOVING_MIN", "0.04"))  # std of jawOpen over half a second
+GESTURE_MIN_SCORE = float(os.getenv("GESTURE_MIN_SCORE", "0.6"))
+GESTURE_HOLD_MS = float(os.getenv("GESTURE_HOLD_MS", "400"))
+GESTURE_LEAD_SECONDS = float(os.getenv("GESTURE_LEAD_SECONDS", "1.5"))  # a gesture this long before speaking counts
+
 # --- Mouth ---
 PIPER_VOICE = os.getenv("PIPER_VOICE", "voices/en_GB-alan-medium.onnx")
 

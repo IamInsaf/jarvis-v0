@@ -49,8 +49,10 @@ CATEGORIES = {
                  ["send_message", "save_contact", "list_contacts", "forget_contact"],
                  "send_message reads the message back and asks before sending; never say a message was sent "
                  "unless send_message said so."),
-    "apps": ("opening or launching an application or program on this computer", ["open_app"],
-             "Call open_app to open an app. Never say an app opened unless open_app said so."),
+    "apps": ("opening, launching, closing or quitting an application or program on this computer",
+             ["open_app", "close_app"],
+             "Call open_app to open an app and close_app to close one. Never say an app opened or closed "
+             "unless the tool said so."),
     "skills": ("the user asks you to learn, add or build a new ability, or to remove a learned one",
                ["add_feature", "remove_feature"],
                "To learn a new ability call add_feature; tell the user nothing is saved without their approval.\n"
@@ -70,8 +72,8 @@ _TASK_TALK = re.compile(r"\b(?:to-?dos?|to do list|task ?list|tasks?)\b", re.I)
 _TIMER_TALK = re.compile(r"\b(?:timers?|alarms?|remind(?:er|ers)?)\b", re.I)
 _SITE_JOB = re.compile(r"\b(?:build|make|create|design|code|change|edit|update|fix|show|run|serve|stop|start)\b.*"
                        r"\b(?:web ?sites?|web ?pages?|web apps?|landing pages?|portfolio(?: site)?)\b", re.I)
-_NOT_A_SKILL = re.compile(r"\b(?:web ?sites?|web ?pages?|web apps?|landing pages?|portfolio)\b|^\s*(?:open|launch)\b",
-                          re.I)
+_NOT_A_SKILL = re.compile(r"\b(?:web ?sites?|web ?pages?|web apps?|landing pages?|portfolio)\b"
+                          r"|^\s*(?:open|launch|close|quit)\b", re.I)
 _ABILITY_QUESTION = re.compile(r"^\s*(?:do|does|did|are|is|have|has)\s+you\b|\bare you able\b", re.I)
 
 _ROUTER = """Classify the user's latest message into exactly one category.
