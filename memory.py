@@ -14,6 +14,10 @@ class Memory:
         self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.execute("CREATE TABLE IF NOT EXISTS facts(id INTEGER PRIMARY KEY, fact TEXT UNIQUE, created REAL)")
         self.db.execute("CREATE TABLE IF NOT EXISTS log(id INTEGER PRIMARY KEY, role TEXT, content TEXT, ts REAL)")
+        # every routed request and the category it got: training data for a learned intent classifier.
+        # category NULL = the router wasn't sure; previous = the exchange before it, for follow-ups
+        self.db.execute("CREATE TABLE IF NOT EXISTS routes(id INTEGER PRIMARY KEY, text TEXT, previous TEXT, "
+                        "category TEXT, ts REAL)")
         try:
             self.db.execute("ALTER TABLE facts ADD COLUMN speaker TEXT")  # NULL = general/shared fact
         except sqlite3.OperationalError:
@@ -69,3 +73,12 @@ class Memory:
     def log(self, role: str, content: str):
         self.db.execute("INSERT INTO log(role, content, ts) VALUES (?, ?, ?)", (role, content, time.time()))
         self.db.commit()
+
+    def log_route(self, text: str, previous: str, category: str | None):
+        self.db.execute("INSERT INTO routes(text, previous, category, ts) VALUES (?, ?, ?, ?)",
+                        (text, previous, category, time.time()))
+        self.db.commit()
+
+    def routes(self) -> list[tuple[str, str, str | None]]:
+        """(text, previous, category) for every routed request, oldest first."""
+        return self.db.execute("SELECT text, previous, category FROM routes ORDER BY id").fetchall()

@@ -102,8 +102,10 @@ class Brain:
                                              "tool_calls": [{"function": {"name": name, "arguments": args}}]},
                                             {"role": "tool", "content": result, "tool_name": name}], say(result))
 
-        category = intents.route(user_text, self._previous_exchange(), self.tools.plugins)
+        previous = self._previous_exchange()
+        category = intents.route(user_text, previous, self.tools.plugins)
         print(f"  [route] {category or 'unsure -> all tools'}")
+        self.memory.log_route(user_text, previous, category)
         tools = intents.tools_for(category, self.tools.schemas, self.tools.plugins)
         facts = "\n".join(f"- {f}" for f in self.memory.relevant_facts(user_text, self.tools.speaker)) or "(none yet)"
         system = SYSTEM.format(title=config.USER_TITLE, facts=facts, speaker=speaker,
