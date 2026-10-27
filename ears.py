@@ -14,6 +14,7 @@ from openwakeword.model import Model
 from faster_whisper import WhisperModel
 
 import config
+import hud
 
 RATE = 16000
 FRAME = 1280  # 80 ms frames, what openWakeWord expects
@@ -58,7 +59,9 @@ class Ears:
 
     def _on_audio(self, indata, frames, t, status):
         tap = self.tap
-        (self.q.put if tap is None else tap.append)(indata[:, 0].copy())
+        frame = indata[:, 0].copy()
+        (self.q.put if tap is None else tap.append)(frame)
+        hud.level("mic", _rms(frame) / (config.SILENCE_RMS * 4))  # speech threshold ≈ a quarter of the bar
 
     def start_tap(self):
         """Send the mic to a private recording until stop_tap(): hold-to-talk dictation."""
@@ -93,6 +96,7 @@ class Ears:
         moving, speech that starts with "Jarvis" or comes with a hand sign. Facing the camera and
         talking with neither (a phone call, someone in the room) is ignored without a sound."""
         on_camera = eyes is not None and (config.GESTURE_TO_TALK or config.NAME_ON_CAMERA)
+        hud.state("idle")
         while True:
             self.flush()
             preroll: deque = deque(maxlen=PREROLL_FRAMES)
@@ -164,7 +168,12 @@ class Ears:
         flush=False keeps audio heard since the last call (dictation: you keep talking while it transcribes)."""
         if flush:
             self.flush()
-        return self._transcribe(self._record(wait))
+        before = hud.current()  # a yes/no asked mid-request goes back to "thinking" afterwards
+        hud.state("listening")
+        try:
+            return self._transcribe(self._record(wait))
+        finally:
+            hud.state("idle" if before == "listening" else before)
 
     def _transcribe(self, audio: np.ndarray | None) -> tuple[str, np.ndarray | None]:
         if audio is None:

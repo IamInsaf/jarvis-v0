@@ -26,6 +26,7 @@ mic → wake word → Whisper (local) → Ollama LLM (local) ⇄ tools → Piper
 | `router.py` | The only path to the cloud: redacts, asks permission |
 | `mouth.py` | Piper text-to-speech |
 | `fingers.py` | Type mode: dictate into any app (hold right Ctrl, or say "type mode start") |
+| `hud.py` | Live dashboard: voice orb, request pipeline, tasks, timers, stats (http://127.0.0.1:8766) |
 | `config.py` / `.env` | All settings |
 
 ## Setup (Windows, macOS or Linux)
@@ -65,6 +66,19 @@ python jarvis.py          # then voice: say "Hey Jarvis"
 
 Try: "Hey Jarvis, remember that I study mechanical engineering" → later "what do I study?"
 Try: "Hey Jarvis, what's the latest news on SpaceX?" (uses private search)
+
+## HUD: watch JARVIS think
+While `python jarvis.py` runs (voice or `--text`), open **http://127.0.0.1:8766** — F11 on a second
+monitor looks the part.
+- **Centre:** the voice orb pulses with your mic and with JARVIS's own voice; its colour is the state
+  (cyan standby/listening, amber processing, white speaking, red when Ollama stops answering).
+- **Pipeline:** each request travels through the real parts — input → voice ID → rules or router →
+  category → memory / tools → LLM → output — with the tool and category it picked.
+- **Panels:** system (model, Ollama, camera, CPU/RAM), activity (requests, facts, routes per category),
+  tasks and live timer countdowns, and the transcript.
+
+It only listens on this machine and loads nothing from the internet. Change the port with `HUD_PORT`
+or turn it off with `HUD_ENABLED=false`. `python hud.py` on its own shows tasks and stats, without the live parts.
 
 ## Type mode: dictate into any app (Windows)
 Like Wispr Flow, but offline and free: the same local Whisper types what you say wherever your cursor is.

@@ -84,5 +84,9 @@ WORKSPACE_DIR = os.path.expanduser(os.getenv("WORKSPACE_DIR", r"~\Documents\Jarv
 CLAUDE_BUILD_BUDGET_USD = float(os.getenv("CLAUDE_BUILD_BUDGET_USD", "2"))
 CLAUDE_BUILD_TIMEOUT = float(os.getenv("CLAUDE_BUILD_TIMEOUT", "1800"))  # seconds
 
+# --- HUD (hud.py): live dashboard at http://127.0.0.1:HUD_PORT while JARVIS runs ---
+HUD_ENABLED = os.getenv("HUD_ENABLED", "true").lower() == "true"
+HUD_PORT = int(os.getenv("HUD_PORT", "8766"))
+
 # --- Personality ---
 USER_TITLE = os.getenv("USER_TITLE", "sir")

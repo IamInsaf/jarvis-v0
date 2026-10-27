@@ -6,6 +6,7 @@ import json
 import re
 
 import config
+import hud
 import intents
 import llm
 import rules
@@ -73,12 +74,19 @@ class Brain:
         self.history: list[list] = []  # one entry per turn: user msg, any tool calls/results, final reply
 
     def think(self, user_text: str, speaker: str | None = None) -> str:
+        hud.emit("heard", text=user_text, speaker=speaker or "unknown")
+        hud.state("thinking")
         try:
             return self._think(user_text, speaker)
         except llm.ERRORS as e:  # Ollama down or stuck: say so instead of crashing or hanging
             print(f"  [llm] {type(e).__name__}: {e}")
+            hud.emit("error", text=f"LLM {type(e).__name__}")
+            hud.state("error")
             return (f"My thinking engine isn't responding, {config.USER_TITLE}. "
                     "Ollama may need restarting.")
+        finally:
+            if hud.current() == "thinking":
+                hud.state("idle")
 
     def _think(self, user_text: str, speaker: str | None) -> str:
         speaker = speaker or "unknown"
@@ -95,6 +103,8 @@ class Brain:
         if match := rules.fast_path(user_text):
             name, args, say = match
             print(f"  [rule] {name}({args})")
+            hud.node("rules", name)
+            hud.node("tools", name)
             result = self.tools.run(name, args)
             # recorded as a real tool call so the model sees how these actually get done
             return self._finish(user_text, [user_msg,
@@ -105,9 +115,14 @@ class Brain:
         previous = self._previous_exchange()
         category = intents.route(user_text, previous, self.tools.plugins)
         print(f"  [route] {category or 'unsure -> all tools'}")
+        hud.node("router", category or "unsure")
+        if category:
+            hud.node(f"cat:{category}")
         self.memory.log_route(user_text, previous, category)
         tools = intents.tools_for(category, self.tools.schemas, self.tools.plugins)
-        facts = "\n".join(f"- {f}" for f in self.memory.relevant_facts(user_text, self.tools.speaker)) or "(none yet)"
+        relevant = self.memory.relevant_facts(user_text, self.tools.speaker)
+        hud.node("memory", f"{len(relevant)} facts")
+        facts = "\n".join(f"- {f}" for f in relevant) or "(none yet)"
         system = SYSTEM.format(title=config.USER_TITLE, facts=facts, speaker=speaker,
                                rules="\n".join(f"- {r}" for r in intents.rules_for(category).splitlines()))
         messages = [{"role": "system", "content": system}, *(m for turn in self.history for m in turn), user_msg]
@@ -135,6 +150,7 @@ class Brain:
                 break
             done.add(key)
             print(f"  [tool] {name}({args})")
+            hud.node("tools", name)
             called.add(name)
             before = set(self.tools.plugins)
             result = self.tools.run(name, args)
@@ -160,6 +176,7 @@ class Brain:
             final = messages + ([{"role": "system", "content": "Reply now. Say only what this turn's tool results "
                                   "say happened, with their exact names and paths, and say plainly if any part of "
                                   "the request wasn't done."}] if called else [])
+            hud.node("llm", "reply")
             msg = llm.client.chat(model=config.OLLAMA_MODEL, messages=final, think=config.OLLAMA_THINK,
                                   options={"temperature": config.OLLAMA_TEMPERATURE,
                                            "num_ctx": config.OLLAMA_NUM_CTX, "num_predict": llm.REPLY_TOKENS}).message
@@ -236,6 +253,7 @@ class Brain:
 
     def _json(self, messages: list, instruction: str, schema: dict):
         """One schema-constrained reply as a dict, retried once; None if it never parses."""
+        hud.node("llm", "deciding")
         for _ in range(2):
             content = llm.client.chat(model=config.OLLAMA_MODEL, format=schema, think=config.OLLAMA_THINK,
                                       messages=[*messages, {"role": "system", "content": instruction}],
@@ -259,4 +277,6 @@ class Brain:
         self.history = [*self.history, turn][-config.HISTORY_TURNS:]
         self.memory.log("user", user_text)
         self.memory.log("assistant", answer)
+        hud.node("mouth")
+        hud.emit("reply", text=answer)
         return answer

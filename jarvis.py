@@ -3,6 +3,7 @@ import argparse
 import re
 
 import config
+import hud
 from brain import Brain
 from memory import Memory
 
@@ -31,12 +32,14 @@ def run_text(memory):
     confirm = lambda q: input(f"{q} [y/N] ").strip().lower().startswith("y")
     speak = lambda text: print(f"JARVIS: {text}")  # timers etc. fire on a background thread
     brain = Brain(memory, confirm, speak)
+    hud.info(mode="text")
     print("JARVIS (text mode). Type 'exit' to quit.")
     while True:
         text = input("YOU: ").strip()
         if text.lower() in ("exit", "quit"):
             break
         if text:
+            hud.node("ears", "typed")
             print(f"JARVIS: {brain.think(text)}")
 
 
@@ -53,6 +56,7 @@ def run_voice(memory, camera: bool = True):
         eyes = Eyes(watching=config.CAMERA_START_ON)  # off by default: say "camera on" to use it
         if not eyes.watching:
             print("  [eyes] camera off; say \"camera on\" to use it")
+    hud.info(mode="voice", camera=eyes.watching if eyes else None)
     mouth = Mouth(ears, eyes)  # saying "jarvis" again or an open palm interrupts a reply
     voice_id = VoiceID()
     try:
@@ -101,6 +105,8 @@ def run_voice(memory, camera: bool = True):
                     continue
         speaker, score = voice_id.identify(audio) if audio is not None else ("unknown", 0.0)
         print(f"YOU ({speaker} {score:.2f}): {text}")
+        hud.node("ears", "voice")
+        hud.node("voice", speaker)
         said = text.lower().strip(" .!?,")
         if said in SLEEP_WORDS:
             mouth.say(f"Going quiet, {config.USER_TITLE}. Say my name when you need me.")
@@ -131,11 +137,14 @@ def type_mode(ears, mouth):
     import fingers
     mouth.say(f"Typing, {config.USER_TITLE}. Say \"type mode done\" when you're finished.")
     ears.flush()  # not my own voice
+    hud.state("dictating")
     try:
         how = fingers.dictate(lambda wait: ears.listen(wait, flush=False), fingers.type_text)
     except OSError as e:
         mouth.say(f"I couldn't type there, {config.USER_TITLE}. {e}")
         return
+    finally:
+        hud.state("idle")
     mouth.say(f"Type mode off, {config.USER_TITLE}." if how == "done" else
               f"It went quiet, so I've stopped typing, {config.USER_TITLE}.")
 
@@ -160,6 +169,7 @@ def eyes_switch(eyes, on: bool) -> str:
     if on == eyes.watching:
         return f"{'Already watching' if on else 'My eyes are already closed'}, {config.USER_TITLE}."
     eyes.resume() if on else eyes.pause()
+    hud.info(camera=on)
     return (f"Watching again, {config.USER_TITLE}." if on else
             f"Eyes closed, {config.USER_TITLE}. The camera is free; say \"hey Jarvis\" when you need me.")
 
@@ -178,6 +188,8 @@ if __name__ == "__main__":
     p.add_argument("--no-camera", action="store_true", help="don't use the webcam even if CAMERA_ENABLED=true")
     args = p.parse_args()
     mem = Memory(config.DB_PATH)
+    if config.HUD_ENABLED and (url := hud.start()):
+        print(f"  [hud] {url}")
     try:
         run_text(mem) if args.text else run_voice(mem, camera=not args.no_camera)
     except KeyboardInterrupt:

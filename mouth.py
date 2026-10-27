@@ -8,6 +8,7 @@ import sounddevice as sd
 from piper import PiperVoice
 
 import config
+import hud
 
 
 class Mouth:
@@ -36,6 +37,8 @@ class Mouth:
         with self._buf_lock:
             chunk = self._buf[self._pos:self._pos + frames]
             self._pos += len(chunk)
+        if len(chunk):  # the HUD's orb moves with what's actually playing
+            hud.level("voice", float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2))) / 6000)
         outdata[:len(chunk), 0] = chunk
         outdata[len(chunk):] = 0
 
@@ -89,7 +92,12 @@ class Mouth:
         # only the main loop may read the mic; a background announcement just plays to the end
         watch = self.ears is not None and threading.current_thread() is threading.main_thread()
         with self.lock:
-            return self._play(audio, watch)
+            before = hud.current()
+            hud.state("speaking")
+            try:
+                return self._play(audio, watch)
+            finally:
+                hud.state("idle" if before == "speaking" else before)
 
     def beep(self):
         t = np.linspace(0, 0.12, int(0.12 * self.rate), False)
