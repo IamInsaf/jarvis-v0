@@ -120,7 +120,7 @@ def tidy(text: str, contact: str) -> str:
     Falls back to the words as heard if the model wanders off."""
     original = text.strip().strip("\"'")
     try:
-        resp = llm.client.chat(model=config.OLLAMA_MODEL, messages=[{"role": "user", "content": (
+        resp = llm.client.chat(model=config.OLLAMA_MODEL, think=config.OLLAMA_THINK, messages=[{"role": "user", "content": (
             f"The user dictated a text message for their {contact}. Rewrite it as the message they would type: "
             "first person, natural, correct grammar, punctuation and capitals. Keep the meaning exactly. Add "
             "nothing new: no greeting, sign-off, emoji or extra details unless they said them. If it's already "

@@ -160,10 +160,10 @@ class Brain:
             final = messages + ([{"role": "system", "content": "Reply now. Say only what this turn's tool results "
                                   "say happened, with their exact names and paths, and say plainly if any part of "
                                   "the request wasn't done."}] if called else [])
-            msg = llm.client.chat(model=config.OLLAMA_MODEL, messages=final,
+            msg = llm.client.chat(model=config.OLLAMA_MODEL, messages=final, think=config.OLLAMA_THINK,
                                   options={"temperature": config.OLLAMA_TEMPERATURE,
                                            "num_ctx": config.OLLAMA_NUM_CTX, "num_predict": llm.REPLY_TOKENS}).message
-            # with no tools on the final call, qwen sometimes writes a tool call out as text instead
+            # with no tools on the final call, small models sometimes write a tool call out as text instead
             answer = (_TOOL_TEXT.sub("", _THINK.sub("", msg.content or "")).strip()
                       or f"I'm afraid I went in circles on that one, {config.USER_TITLE}.")
 
@@ -237,7 +237,7 @@ class Brain:
     def _json(self, messages: list, instruction: str, schema: dict):
         """One schema-constrained reply as a dict, retried once; None if it never parses."""
         for _ in range(2):
-            content = llm.client.chat(model=config.OLLAMA_MODEL, format=schema,
+            content = llm.client.chat(model=config.OLLAMA_MODEL, format=schema, think=config.OLLAMA_THINK,
                                       messages=[*messages, {"role": "system", "content": instruction}],
                                       options={"temperature": 0, "num_ctx": config.OLLAMA_NUM_CTX,
                                                "num_predict": llm.JSON_TOKENS}).message.content

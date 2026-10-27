@@ -42,9 +42,9 @@ cp .env.example .env
 **2. Local brain — Ollama**
 Install from ollama.com, then:
 ```bash
-ollama pull qwen2.5:7b
+ollama pull qwen3.5:4b
 ```
-Any tool-calling model works. Bigger GPU → try `qwen2.5:14b` and set `OLLAMA_MODEL` in `.env`.
+Any tool-calling model works. It fits fully in 6 GB of VRAM next to Whisper. Bigger GPU (8 GB+) → try `qwen3.5:9b` and set `OLLAMA_MODEL` in `.env`.
 
 **3. Voice — Piper**
 Download a voice (`.onnx` + `.onnx.json`) from the Piper voices collection on Hugging Face

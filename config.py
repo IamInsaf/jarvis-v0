@@ -5,15 +5,18 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Brain (local LLM via Ollama) ---
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")   # any tool-capable model works
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:4b")   # any tool-capable model works
 HISTORY_TURNS = int(os.getenv("HISTORY_TURNS", "12"))    # conversation turns kept in RAM
 # 0 = deterministic. Local models skip tool calls (e.g. set_timer) much more often at
 # higher temperatures, so keep this low unless you don't rely on tools.
 OLLAMA_TEMPERATURE = float(os.getenv("OLLAMA_TEMPERATURE", "0"))
-# context window in tokens. Ollama's default is far below what qwen2.5 supports (32k) and it
+# context window in tokens. Ollama's default is far below what the model supports (qwen3.5: 256k) and it
 # silently drops the oldest text when full — including the system prompt and its rules.
 # Bigger costs more RAM/VRAM; lower it if the model gets slow or falls back to CPU.
 OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "8192"))
+# let thinking models (qwen3.5, gemma4) reason before answering. Off: it adds seconds to every
+# spoken reply, and the router and tool arguments are simple enough not to need it
+OLLAMA_THINK = os.getenv("OLLAMA_THINK", "0") == "1"
 # seconds to wait for one Ollama reply (including loading a model) before giving up
 OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "180"))
 # writes new abilities (selfcode.py); falls back to OLLAMA_MODEL if it isn't pulled
