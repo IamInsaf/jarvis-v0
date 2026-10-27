@@ -715,6 +715,7 @@ function connect() {
     else if (e.kind === "heard") { addLine("user", e.text, e.t); $("#statesub").textContent = "“" + e.text + "”"; }
     else if (e.kind === "reply") { addLine("assistant", e.text, e.t); $("#statesub").textContent = ""; refreshSoon(); }
     else if (e.kind === "error") { addTag("✖ " + e.text); }
+    else if (e.kind === "brain") { addTag("⇄ " + e.model); refreshSoon(); }
     else if (e.kind === "info") refreshSoon();
   };
 }

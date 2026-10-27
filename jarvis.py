@@ -2,6 +2,7 @@
 import argparse
 import re
 
+import brains
 import config
 import hud
 from brain import Brain
@@ -188,6 +189,7 @@ if __name__ == "__main__":
     p.add_argument("--no-camera", action="store_true", help="don't use the webcam even if CAMERA_ENABLED=true")
     args = p.parse_args()
     mem = Memory(config.DB_PATH)
+    brains.load_saved()  # the model last switched to by voice, over OLLAMA_MODEL in .env
     if config.HUD_ENABLED and (url := hud.start()):
         print(f"  [hud] {url}")
     try:

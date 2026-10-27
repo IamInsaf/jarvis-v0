@@ -15,3 +15,21 @@ CODE_TOKENS = 2500  # a whole plugin file
 
 # what a dead, stuck or missing Ollama looks like to callers
 ERRORS = (httpx.HTTPError, ollama.ResponseError, ConnectionError)
+
+_capabilities: dict[str, list] = {}
+
+
+def capabilities(model: str) -> list:
+    """What Ollama says the model can do: "tools", "thinking", "vision"... ([] if Ollama can't say)."""
+    if model not in _capabilities:
+        try:
+            _capabilities[model] = list(client.show(model).capabilities or [])
+        except ERRORS:
+            return []
+    return _capabilities[model]
+
+
+def think() -> bool:
+    """OLLAMA_THINK for the current brain, if it can think: asking a model without it fails the call,
+    and the brain can be switched by voice (brains.py) to one that can't."""
+    return config.OLLAMA_THINK and "thinking" in capabilities(config.OLLAMA_MODEL)

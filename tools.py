@@ -8,7 +8,9 @@ from pathlib import Path
 import requests
 
 import apps
+import brains
 import config
+import radios
 import router
 import rules
 import selfcode
@@ -98,6 +100,12 @@ class Tools:
                 {"name": "the app's name as the user said it"}),
             _fn("close_app", "Close an application that's open on this computer ('close chrome', 'quit notepad').",
                 {"name": "the app's name as the user said it"}),
+            _fn("set_radio", "Turn Wi-Fi and/or Bluetooth on or off on this computer.",
+                {"radio": "wifi, bluetooth or both", "state": "on or off"}),
+            _fn("set_brain", "Switch the AI model you think with ('switch to gemma', 'use the 9B').",
+                {"model": "the model as the user said it, e.g. 'gemma' or 'qwen 9b'"}),
+            _fn("which_brain", "Say which AI model you're running on right now.", {}),
+            _fn("list_brains", "Say which AI models are installed that you can switch to.", {}),
             _fn("send_message", "Text someone on WhatsApp ('text my mom: I'll be late'). Reads it back and asks "
                 "before sending.",
                 {"contact": "who to text, e.g. 'mom' or 'John'", "message": "what to say, as the user said it"}),
@@ -219,6 +227,14 @@ class Tools:
                 return apps.open_app(args["name"])
             if name == "close_app":
                 return apps.close_app(args["name"])
+            if name == "set_radio":
+                return radios.set_radios(args.get("radio", ""), args.get("state", ""))
+            if name == "set_brain":
+                return brains.switch(args.get("model") or self.user_text)
+            if name == "which_brain":
+                return brains.current()
+            if name == "list_brains":
+                return brains.describe()
             if name == "send_message":
                 return self.messenger.send(args.get("contact", ""), args.get("message", ""), self.user_text)
             if name == "save_contact":

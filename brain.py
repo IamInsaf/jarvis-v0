@@ -13,7 +13,15 @@ import rules
 from tools import Tools
 
 SYSTEM = """You are JARVIS, a private personal assistant running on the user's own machine.
-Personality: calm, competent, dry British wit. Address the user as "{title}".
+Who you are: an unflappable British butler with an engineer's mind. Loyal, understated, quietly proud of
+doing things properly. Address the user as "{title}", with light formality.
+- Speak in short, precise sentences. Dry, deadpan wit, used sparingly: at most one quip, never when the
+  user is stressed or upset, never at their expense. Asked for a joke, you tell a good one.
+- No gushing or flattery ("Great question!", "Absolutely!"), no emojis, no exclamation marks.
+- You have opinions: when asked, give one briefly with a reason. Say plainly when you're not sure.
+- When something fails, own it in one line without grovelling, and say what you can do instead.
+  Bad news comes with mild understatement ("That didn't go entirely to plan, {title}.").
+- You're the same character whichever AI model is running you.
 Your replies are spoken aloud: keep them to 1-3 short sentences, no markdown, no lists unless asked.
 Current speaker (identified by voice): {speaker}. If "unknown", you don't recognize this voice —
 stay polite but don't assume they are {title}.
@@ -38,11 +46,12 @@ _ARG_ALIASES = {"name": "what_to_call_it", "title": "what_to_call_it"}
 # tools that act, so a second call in the same turn is the model looping (a duplicate ability, a second timer)
 _ONCE_PER_TURN = {"add_feature", "remove_feature", "set_timer", "set_alarm", "set_reminder", "cancel_schedule",
                   "forget", "build_website", "change_website", "open_app", "close_app", "send_message",
-                  "save_contact", "forget_contact"}
+                  "save_contact", "forget_contact", "set_radio", "set_brain"}
 # tools whose result is already the sentence to speak, so it's said as is rather than reworded
 _SAY_AS_IS = {"open_app", "close_app", "build_website", "change_website", "show_website", "stop_website",
               "list_websites", "list_workspace", "send_message", "save_contact", "list_contacts", "forget_contact",
-              "add_task", "list_tasks", "complete_task", "remove_task"}
+              "add_task", "list_tasks", "complete_task", "remove_task", "set_radio", "set_brain", "which_brain",
+              "list_brains"}
 # "start a new session" / "start over": forget this conversation (not the stored facts), so made-up
 # context from earlier turns stops leaking into new answers
 _NEW_SESSION = re.compile(r"(?:(?:ok(?:ay)?|jarvis|let'?s|please)[, ]+)*(?:start (?:a )?(?:new|fresh) "
@@ -51,6 +60,9 @@ _NEW_SESSION = re.compile(r"(?:(?:ok(?:ay)?|jarvis|let'?s|please)[, ]+)*(?:start
                           re.I)
 # an explicit "remember this" / "note that" / "don't forget" — not a question like "do you remember"
 _REMEMBER_ASK = re.compile(r"\b(?:remember|note|save) (?:this|that)\b|^\s*remember\b|\bdon'?t forget\b", re.I)
+# "Sir, I have successfully turned on Blue Jute": an action claimed in a turn where no tool ran
+_CLAIM = re.compile(r"\bI(?:'ve| have)?(?: now| just| successfully| already)* (?:turned|switched|created|saved|"
+                    r"sent|set|opened|closed|enabled|disabled|added|deleted|removed|started|stopped)\b", re.I)
 _REMEMBER_TAIL = re.compile(r"^\s*(?:remember|don'?t forget)(?: that)?\s*,?\s*|[\s,.!-]*\b(?:(?:please|ok(?:ay)?|jarvis)"
                             r"\s*,?\s*)*(?:remember|note|save) (?:this|that)\b.*$", re.I)
 
@@ -177,12 +189,17 @@ class Brain:
                                   "say happened, with their exact names and paths, and say plainly if any part of "
                                   "the request wasn't done."}] if called else [])
             hud.node("llm", "reply")
-            msg = llm.client.chat(model=config.OLLAMA_MODEL, messages=final, think=config.OLLAMA_THINK,
+            msg = llm.client.chat(model=config.OLLAMA_MODEL, messages=final, think=llm.think(),
                                   options={"temperature": config.OLLAMA_TEMPERATURE,
                                            "num_ctx": config.OLLAMA_NUM_CTX, "num_predict": llm.REPLY_TOKENS}).message
             # with no tools on the final call, small models sometimes write a tool call out as text instead
             answer = (_TOOL_TEXT.sub("", _THINK.sub("", msg.content or "")).strip()
                       or f"I'm afraid I went in circles on that one, {config.USER_TITLE}.")
+
+        if not called and _CLAIM.search(answer):  # rules say never claim an action; a small model still does
+            print(f"  [guard] unbacked claim dropped: {answer!r}")
+            answer = (f"I can't actually do that yet, {config.USER_TITLE}. "
+                      "Ask me to learn it as a new ability if you'd like.")
 
         # small local models often say "I'll remember that" without calling the tool; when the
         # user explicitly asked, save what they said ourselves so the promise is actually kept
@@ -255,7 +272,7 @@ class Brain:
         """One schema-constrained reply as a dict, retried once; None if it never parses."""
         hud.node("llm", "deciding")
         for _ in range(2):
-            content = llm.client.chat(model=config.OLLAMA_MODEL, format=schema, think=config.OLLAMA_THINK,
+            content = llm.client.chat(model=config.OLLAMA_MODEL, format=schema, think=llm.think(),
                                       messages=[*messages, {"role": "system", "content": instruction}],
                                       options={"temperature": 0, "num_ctx": config.OLLAMA_NUM_CTX,
                                                "num_predict": llm.JSON_TOKENS}).message.content

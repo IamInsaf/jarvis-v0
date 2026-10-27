@@ -53,6 +53,11 @@ CATEGORIES = {
              ["open_app", "close_app"],
              "Call open_app to open an app and close_app to close one. Never say an app opened or closed "
              "unless the tool said so."),
+    "devices": ("turning this computer's Wi-Fi or Bluetooth on or off", ["set_radio"],
+                "Call set_radio to switch Wi-Fi or Bluetooth. Never say one was switched unless set_radio said so."),
+    "brain": ("switching the AI model / brain you think with, or asking which one you're running on",
+              ["set_brain", "which_brain", "list_brains"],
+              "Call set_brain to switch models. Never say you switched unless set_brain said so."),
     "skills": ("the user asks you to learn, add or build a new ability, or to remove a learned one",
                ["add_feature", "remove_feature"],
                "To learn a new ability call add_feature; tell the user nothing is saved without their approval.\n"
@@ -141,7 +146,7 @@ def _pick(user_text: str, previous: str, cats: dict) -> str | None:
     for _ in range(2):  # constrained output almost never fails; one retry covers the rest
         try:
             # same num_ctx as the main call: a different one makes Ollama reload the whole model
-            resp = llm.client.chat(model=config.OLLAMA_MODEL, format=schema, think=config.OLLAMA_THINK,
+            resp = llm.client.chat(model=config.OLLAMA_MODEL, format=schema, think=llm.think(),
                                    messages=[{"role": "system", "content": system},
                                              {"role": "user", "content": user_text}],
                                    options={"temperature": 0, "num_ctx": config.OLLAMA_NUM_CTX,

@@ -5,7 +5,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Brain (local LLM via Ollama) ---
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:4b")   # any tool-capable model works
+# any tool-capable model works. This is the default: "switch to gemma" changes it while running,
+# and that choice (data/brain.json) wins on the next start too (brains.py)
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:4b")
 HISTORY_TURNS = int(os.getenv("HISTORY_TURNS", "12"))    # conversation turns kept in RAM
 # 0 = deterministic. Local models skip tool calls (e.g. set_timer) much more often at
 # higher temperatures, so keep this low unless you don't rely on tools.

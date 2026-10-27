@@ -39,6 +39,8 @@ _BANNED_ATTRS = {"os", "sys", "subprocess", "system", "popen", "spawn", "unlink"
 # results that mean the plugin caught its own error rather than working
 _FAILED_RESULT = re.compile(r"^\s*(?:error|failed|exception|traceback|an error|sorry, (?:an? )?error|"
                             r"could not|couldn't|unable to)\b", re.I)
+# a draft that admits it only pretends: "# Simulate turning on Wi-Fi" then "Wi-Fi is now on."
+_PRETEND = re.compile(r"\b(?:simulat\w*|pretend\w*|placeholder|fake|dummy|mock(?:ed|ing)?|stub(?:bed)?)\b", re.I)
 # an ability that should leave something on disk; its test must actually create or write it
 _FILE_JOB = re.compile(r"\b(?:create|make|new|write|save|add|append|put|store|log)\b.*"
                        r"\b(?:files?|folders?|director(?:y|ies)|notes?|text|documents?|\.txt|lists?)\b", re.I)
@@ -72,7 +74,9 @@ Hard rules:
 - Really do the job. Never only record in memory that something was done, and never claim success for
   something the code didn't actually do — the test checks what really happened.
 - If the ability needs something ctx and the allowed modules can't do, reply with exactly one line
-  `CANNOT: <short reason>` instead of code.
+  `CANNOT: <short reason>` instead of code. That includes anything that changes this computer itself:
+  Wi-Fi, Bluetooth, volume, brightness, power, settings, other programs. Never write code that only
+  pretends or "simulates" the job.
 - Only these modules may be imported: requests, re, json, math, random, time, datetime, config.
 - No file access except through ctx.files: no open, no os/sys/subprocess, no eval/exec/getattr,
   no dunder attributes like __class__.
@@ -153,6 +157,9 @@ def create_plugin(description: str, confirm, speak, taken: set) -> str:
         if cannot:  # an honest "can't" beats a plugin that only pretends
             return f"I can't build that with what I'm allowed to use: {cannot.group(1).strip()[:200]}"
         name, problem = _check(code, taken)
+        if not problem and (fake := _PRETEND.search(code)):
+            problem = (f"the code only pretends to do the job (it says '{fake.group(0)}'). Do it for real, or if "
+                       "the allowed modules can't, reply with exactly one line `CANNOT: <short reason>`.")
         if not problem:
             result, created, problem = _test_run(code)
         if not problem and not created and _FILE_JOB.search(description):

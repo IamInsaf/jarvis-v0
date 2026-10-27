@@ -5,7 +5,9 @@ Also home to the spoken time/duration parsing the scheduling tools use on the LL
 import re
 from datetime import datetime, timedelta
 
+import brains
 import config
+import radios
 import timezones
 
 # leading filler a speech transcript often carries: "hey jarvis, ...", "okay so ..."
@@ -162,6 +164,10 @@ def fast_path(text: str):
         return "get_time", {}, lambda r: f"It's {r.split(', ')[0]}, {title}."
     if (m := _TIME_IN.match(text)) and timezones.resolve(m["place"]):
         return "time_in", {"place": m["place"].strip()}, titled
+    if radio := radios.parse(text):  # "turn on blue jute" went to chat, which claimed it was done
+        return "set_radio", {"radio": radio[0], "state": radio[1]}, titled
+    if brain := brains.parse(text):  # "switch to gemma", "which brain are you using?"
+        return brain[0], brain[1], lambda r: r
     if _SCHED.search(text) and _CANCEL.search(text):
         return "cancel_schedule", {"which": text.strip(" ?.!")}, titled
     if _SCHED.search(text) and _LIST.search(text) and not _SET.search(text):
