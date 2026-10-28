@@ -10,6 +10,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config  # noqa: E402
 import ears  # noqa: E402
+import vad  # noqa: E402
 from eyes import Debounce, Eyes, GestureFilter, MouthMotion, Sight  # noqa: E402
 
 LOUD = np.full(ears.FRAME, 3000, dtype=np.int16)
@@ -122,6 +123,7 @@ def fake_ears(frames, transcripts):
     e.wake = type("Wake", (), {"predict": lambda self, f: {"hey_jarvis": 0.9 if f is WAKE else 0.0},
                                "reset": lambda self: None})()
     said = iter(transcripts)
+    e.vad = vad.SpeechDetector(loudness_only=True)  # the scripted frames are loud or quiet, not real speech
     e.flush = lambda: None  # keep the scripted frames
     e._transcribe = lambda audio: (next(said), audio)
     return e

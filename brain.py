@@ -10,6 +10,7 @@ import hud
 import intents
 import llm
 import rules
+import speech_chunker
 from tools import Tools
 
 SYSTEM = """You are JARVIS, a private personal assistant running on the user's own machine.
@@ -46,12 +47,16 @@ _ARG_ALIASES = {"name": "what_to_call_it", "title": "what_to_call_it"}
 # tools that act, so a second call in the same turn is the model looping (a duplicate ability, a second timer)
 _ONCE_PER_TURN = {"add_feature", "remove_feature", "set_timer", "set_alarm", "set_reminder", "cancel_schedule",
                   "forget", "build_website", "change_website", "open_app", "close_app", "send_message",
-                  "save_contact", "forget_contact", "set_radio", "set_brain"}
+                  "save_contact", "forget_contact", "set_radio", "set_brain", "run_shell", "look_at_screen",
+                  "type_text", "switch_window"}
 # tools whose result is already the sentence to speak, so it's said as is rather than reworded
 _SAY_AS_IS = {"open_app", "close_app", "build_website", "change_website", "show_website", "stop_website",
               "list_websites", "list_workspace", "send_message", "save_contact", "list_contacts", "forget_contact",
               "add_task", "list_tasks", "complete_task", "remove_task", "set_radio", "set_brain", "which_brain",
-              "list_brains"}
+              "list_brains", "briefing", "press_keys", "type_text", "switch_window", "media", "look_at_screen"}
+# "open notepad and type hello": after these, a request that goes on to type or press something continues
+_LEADS_ON = {"open_app", "switch_window"}
+_AND_THEN = re.compile(r"\b(?:and|then)\b.*\b(?:type|write|press|hit|enter|search|paste)\b", re.I)
 # "start a new session" / "start over": forget this conversation (not the stored facts), so made-up
 # context from earlier turns stops leaking into new answers
 _NEW_SESSION = re.compile(r"(?:(?:ok(?:ay)?|jarvis|let'?s|please)[, ]+)*(?:start (?:a )?(?:new|fresh) "
@@ -63,6 +68,11 @@ _REMEMBER_ASK = re.compile(r"\b(?:remember|note|save) (?:this|that)\b|^\s*rememb
 # "Sir, I have successfully turned on Blue Jute": an action claimed in a turn where no tool ran
 _CLAIM = re.compile(r"\bI(?:'ve| have)?(?: now| just| successfully| already)* (?:turned|switched|created|saved|"
                     r"sent|set|opened|closed|enabled|disabled|added|deleted|removed|started|stopped)\b", re.I)
+_NO_CAN_DO = "I can't actually do that yet, {title}. Ask me to learn it as a new ability if you'd like."
+# tools that take a while: a short line is spoken while they run (think_stream only)
+_SLOW = {"web_search": "One moment, {title}.", "add_feature": "Let me work out how to do that, {title}.",
+         "change_website": "Making that change now, {title}.",
+         "ask_cloud_expert": "Let me consult the expert, {title}."}
 _REMEMBER_TAIL = re.compile(r"^\s*(?:remember|don'?t forget)(?: that)?\s*,?\s*|[\s,.!-]*\b(?:(?:please|ok(?:ay)?|jarvis)"
                             r"\s*,?\s*)*(?:remember|note|save) (?:this|that)\b.*$", re.I)
 
@@ -86,21 +96,81 @@ class Brain:
         self.history: list[list] = []  # one entry per turn: user msg, any tool calls/results, final reply
 
     def think(self, user_text: str, speaker: str | None = None) -> str:
-        hud.emit("heard", text=user_text, speaker=speaker or "unknown")
+        """The whole reply at once (text mode, tests)."""
+        return "".join(self._guarded(self._turn(user_text, speaker, stream=False), acks=False))
+
+    def think_stream(self, user_text: str, speaker: str | None = None):
+        """The reply clause by clause as the model writes it, so the voice can start on the first one.
+        A slow tool is announced first ("One moment, sir."). Closing the generator early (the user
+        interrupted) still records the turn, with what had been said."""
+        yield from self._guarded(self._turn(user_text, speaker, stream=True), acks=True)
+
+    def _guarded(self, events, acks: bool):
+        """The texts of a turn's events, with Ollama failures turned into one spoken apology."""
         hud.state("thinking")
         try:
-            return self._think(user_text, speaker)
+            for kind, text in events:
+                if kind == "say" or acks:
+                    yield text
         except llm.ERRORS as e:  # Ollama down or stuck: say so instead of crashing or hanging
             print(f"  [llm] {type(e).__name__}: {e}")
             hud.emit("error", text=f"LLM {type(e).__name__}")
             hud.state("error")
-            return (f"My thinking engine isn't responding, {config.USER_TITLE}. "
-                    "Ollama may need restarting.")
+            yield (f"My thinking engine isn't responding, {config.USER_TITLE}. "
+                   "Ollama may need restarting.")
         finally:
             if hud.current() == "thinking":
                 hud.state("idle")
 
-    def _think(self, user_text: str, speaker: str | None) -> str:
+    def _turn(self, user_text: str, speaker: str | None, stream: bool):
+        """("ack", text) and ("say", text) events for one turn; the "say" texts joined are the reply."""
+        hud.emit("heard", text=user_text, speaker=speaker or "unknown")
+        planned = yield from self._plan(user_text, speaker)
+        if isinstance(planned, str):
+            yield "say", planned
+            return
+        messages, called, turn_start = planned
+        results = [m["content"] for m in messages[turn_start:] if m["role"] == "tool"]
+        if len(results) == 1 and called <= _SAY_AS_IS:
+            # these results are already a spoken sentence; reworded, "I couldn't find Spotify"
+            # came out as "Spotify has opened"
+            yield "say", self._complete(user_text, messages, called, turn_start, results[0])
+            return
+        # it reported "alpha" created when the tool had made "create_folder_alpha": tie the reply to the results
+        final = messages + ([{"role": "system", "content": "Reply now. Say only what this turn's tool results "
+                              "say happened, with their exact names and paths, and say plainly if any part of "
+                              "the request wasn't done."}] if called else [])
+        hud.node("llm", "reply")
+        said = []
+        try:
+            for clause in (speech_chunker.clauses(llm.stream_chat(final)) if stream else [self._reply(final)]):
+                if not called and _CLAIM.search(clause):  # rules say never claim an action; a small model still does
+                    print(f"  [guard] unbacked claim dropped: {clause!r}")
+                    clause = _NO_CAN_DO.format(title=config.USER_TITLE)
+                    said.append(clause)
+                    yield "say", (" " if len(said) > 1 else "") + clause
+                    break  # caught before it's spoken: the rest of that reply isn't said either
+                if clause:
+                    said.append(clause)
+                    yield "say", (" " if len(said) > 1 else "") + clause
+            if not said:
+                said = [f"I'm afraid I went in circles on that one, {config.USER_TITLE}."]
+                yield "say", said[0]
+        finally:  # also when the user cut the reply short: the turn is kept with what was said
+            self._complete(user_text, messages, called, turn_start, " ".join(said) or "(interrupted)")
+
+    def _reply(self, messages: list) -> str:
+        """The final reply in one call (not streamed)."""
+        msg = llm.client.chat(model=config.OLLAMA_MODEL, messages=messages, think=llm.think(),
+                              options={"temperature": config.OLLAMA_TEMPERATURE,
+                                       "num_ctx": config.OLLAMA_NUM_CTX, "num_predict": llm.REPLY_TOKENS}).message
+        # with no tools on the final call, small models sometimes write a tool call out as text instead
+        return _TOOL_TEXT.sub("", _THINK.sub("", msg.content or "")).strip()
+
+    def _plan(self, user_text: str, speaker: str | None):
+        """Everything before the spoken reply: rules, routing, tools. Yields ("ack", text) before a slow
+        tool; returns the finished answer (str), or (messages, called, turn_start) when the model still
+        has to write the reply."""
         speaker = speaker or "unknown"
         # an unrecognized voice gets unscoped facts (same as before voice ID existed);
         # a named one gets its own facts plus anything general/shared
@@ -163,6 +233,8 @@ class Brain:
             done.add(key)
             print(f"  [tool] {name}({args})")
             hud.node("tools", name)
+            if ack := _SLOW.get(name):  # said while the tool runs, so the wait isn't silent
+                yield "ack", ack.format(title=config.USER_TITLE)
             called.add(name)
             before = set(self.tools.plugins)
             result = self.tools.run(name, args)
@@ -175,32 +247,13 @@ class Brain:
                          {"role": "tool", "content": result, "tool_name": name}]
             if not learned and result.rstrip().endswith("?"):  # "What should I call the folder?" waits for the user
                 break
+            if name in _LEADS_ON and _AND_THEN.search(user_text) and not result.rstrip().endswith("?"):
+                continue
             if name in _SAY_AS_IS:  # one per turn: after saving mom's number it sent her a message nobody said
                 break
+        return messages, called, turn_start
 
-        results = [m["content"] for m in messages[turn_start:] if m["role"] == "tool"]
-        if len(results) == 1 and called <= _SAY_AS_IS:
-            # these results are already a spoken sentence; reworded, "I couldn't find Spotify"
-            # came out as "Spotify has opened"
-            answer = results[0]
-        else:
-            # it reported "alpha" created when the tool had made "create_folder_alpha": tie the reply to the results
-            final = messages + ([{"role": "system", "content": "Reply now. Say only what this turn's tool results "
-                                  "say happened, with their exact names and paths, and say plainly if any part of "
-                                  "the request wasn't done."}] if called else [])
-            hud.node("llm", "reply")
-            msg = llm.client.chat(model=config.OLLAMA_MODEL, messages=final, think=llm.think(),
-                                  options={"temperature": config.OLLAMA_TEMPERATURE,
-                                           "num_ctx": config.OLLAMA_NUM_CTX, "num_predict": llm.REPLY_TOKENS}).message
-            # with no tools on the final call, small models sometimes write a tool call out as text instead
-            answer = (_TOOL_TEXT.sub("", _THINK.sub("", msg.content or "")).strip()
-                      or f"I'm afraid I went in circles on that one, {config.USER_TITLE}.")
-
-        if not called and _CLAIM.search(answer):  # rules say never claim an action; a small model still does
-            print(f"  [guard] unbacked claim dropped: {answer!r}")
-            answer = (f"I can't actually do that yet, {config.USER_TITLE}. "
-                      "Ask me to learn it as a new ability if you'd like.")
-
+    def _complete(self, user_text: str, messages: list, called: set, turn_start: int, answer: str) -> str:
         # small local models often say "I'll remember that" without calling the tool; when the
         # user explicitly asked, save what they said ourselves so the promise is actually kept
         if _REMEMBER_ASK.search(user_text) and "remember" not in called:
@@ -281,6 +334,10 @@ class Brain:
             except (json.JSONDecodeError, TypeError):
                 continue
         return None
+
+    def last_reply(self) -> str:
+        """What was said in reply last turn (as far as it got, if interrupted)."""
+        return self.history[-1][-1]["content"] if self.history else ""
 
     def _previous_exchange(self) -> str:
         """Last user message and reply, so the router can place follow-ups like "make it ten"."""

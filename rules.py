@@ -158,6 +158,9 @@ def fast_path(text: str):
     title = config.USER_TITLE
     # tool results are already speakable: "Timer set for 5 minutes." -> "Timer set for 5 minutes, sir."
     titled = lambda r: f"{r[:-1]}, {title}{r[-1]}" if r[-1:] in (".", "?", "!") else f"{r}, {title}."  # noqa: E731
+    import briefing  # here, not at the top: briefing uses this module's spoken_clock
+    if briefing.ASK.match(text):  # "good morning" / "brief me": the day at a glance, no LLM
+        return "briefing", {}, lambda r: r
     if _TIME_ASK.match(text):  # get_time gives "Saturday 24 October 2026, 09:05 AM"
         return "get_time", {}, lambda r: f"It's {r.split(', ')[-1].lstrip('0')}, {title}."
     if _DATE_ASK.match(text):

@@ -16,7 +16,7 @@ CATEGORIES = {
              "Always call get_time or time_in for a time or date — never state one from memory or work out "
              "a timezone yourself."),
     "timer": ("timers, alarms, countdowns and reminders: setting, checking, listing or cancelling them",
-              ["set_timer", "set_alarm", "set_reminder", "list_schedule", "cancel_schedule"],
+              ["set_timer", "set_alarm", "set_reminder", "list_schedule", "cancel_schedule", "briefing"],
               "set_timer is for a duration, set_alarm for a clock time, set_reminder for something to be "
               "reminded about. Pass times exactly as the user said them — never convert them yourself.\n"
               "Never say something is set or cancelled unless the tool said so."),
@@ -50,9 +50,19 @@ CATEGORIES = {
                  "send_message reads the message back and asks before sending; never say a message was sent "
                  "unless send_message said so."),
     "apps": ("opening, launching, closing or quitting an application or program on this computer",
-             ["open_app", "close_app"],
-             "Call open_app to open an app and close_app to close one. Never say an app opened or closed "
+             ["open_app", "close_app", "type_text", "press_keys", "switch_window"],
+             "Call open_app to open an app and close_app to close one. If the request goes on to type or press "
+             "something in it, call type_text or press_keys next. Never say an app opened or closed "
              "unless the tool said so."),
+    "computer": ("controlling this computer: pressing keys or shortcuts, typing text into a window, switching "
+                 "windows, volume and music playback, looking at or reading the screen, or system information "
+                 "and commands (disk space, IP address, battery, processes)",
+                 ["press_keys", "type_text", "switch_window", "media", "look_at_screen", "run_shell", "open_app"],
+                 "Use the specific tool when one fits; run_shell (PowerShell) only for what none of them covers. "
+                 "Prefer read-only Get- commands that work as written, e.g. free disk space: Get-PSDrive C; IP "
+                 "address: Get-NetIPAddress -AddressFamily IPv4; battery: Get-CimInstance Win32_Battery; busiest "
+                 "programs: Get-Process | Sort-Object CPU -Descending | Select-Object -First 5 Name,CPU.\n"
+                 "Never say something happened unless a tool result says so."),
     "devices": ("turning this computer's Wi-Fi or Bluetooth on or off", ["set_radio"],
                 "Call set_radio to switch Wi-Fi or Bluetooth. Never say one was switched unless set_radio said so."),
     "brain": ("switching the AI model / brain you think with, or asking which one you're running on",

@@ -1,6 +1,7 @@
 """JARVIS v0 — run `python jarvis.py` for voice, or `python jarvis.py --text` to test by typing."""
 import argparse
 import re
+import time
 
 import brains
 import config
@@ -25,6 +26,10 @@ NO = re.compile(r"\b(?:no|nope|nah|don'?t|do not|cancel|stop|never ?mind)\b")
 DONE = re.compile(r"(?:(?:ok(?:ay)?|no|great|cool|perfect|good|nice|alright)[, ]*)?(?:thanks?(?: you)?(?: jarvis)?|"
                   r"that'?s (?:all|it)|nothing(?: else)?|never ?mind|no thanks?|i'?m good|that'?s fine|bye|"
                   r"cheers|ok(?:ay)?|cool|got it|great|perfect)(?:[, ]*(?:jarvis|sir|mate))?")
+# said over a reply to just stop it talking: no answer needed ("stop", "okay, quiet", "enough, thanks")
+STOP = re.compile(r"(?:(?:ok(?:ay)?|jarvis|no|alright)[, ]*)*(?:stop(?: (?:talking|there|it))?|quiet|be quiet|"
+                  r"shush|shh+|hush|enough|that'?s enough|shut up|hold on|wait|pause|silence)"
+                  r"(?:[, ]*(?:please|jarvis|sir|thanks?(?: you)?))*")
 _ALWAYS_GHOSTS = {"you", "thanks for watching", "thank you for watching", "uh", "um", "hmm", "the", "and"}
 _WHISPER_GHOSTS = _ALWAYS_GHOSTS | {"thank you", "bye", "so", "okay", "oh", "ah", "i"}
 
@@ -66,10 +71,13 @@ def run_voice(memory, camera: bool = True):
         print(f"  [type] hotkey off: {e}")
 
     def confirm(q):
-        if mouth.say(q) == "palm":  # a palm while it asks means "no, leave it"
+        how = mouth.say(q)
+        if how == "palm":  # a palm while it asks means "no, leave it"
             return False
         for _ in range(3):  # silence or a mumble isn't a "no": ask again rather than throw work away
-            reply, _ = ears.listen(wait=8)  # a yes/no after a long question often takes a moment
+            # "yes" said over the question counts; otherwise a yes/no after a long question often takes a moment
+            reply, _ = ears.after_barge() if how == "voice" else ears.listen(wait=8)
+            how = None
             reply = (reply or "").lower()
             print(f"YOU: {reply}")
             if NO.search(reply):  # first, so "don't keep it" isn't heard as "keep it"
@@ -82,15 +90,24 @@ def run_voice(memory, camera: bool = True):
     brain = Brain(memory, confirm, mouth.say)
     mouth.say(f"Online and ready, {config.USER_TITLE}.")
     woken = False
+    barged = False  # the user talked over the last reply: what they said is the next request
     follow_up = 0  # seconds to keep listening without the wake word after a reply; 0 = wait for it
     asked = False  # the last reply was a question, so a short "okay" is an answer, not "I'm done"
     while True:
-        if follow_up:
+        if barged:
+            barged = False
+            text, audio = ears.after_barge()
+            if not text or is_noise(text) or is_echo(text, brain.last_reply()):
+                continue  # a cough, or the mic hearing JARVIS itself
+            if STOP.fullmatch(text.lower().strip(" .!?,")):
+                print("  [barge] stopped")
+                continue
+        elif follow_up:
             # still in the conversation: a short beep says "go on", and silence ends it
             mouth.beep()
             text, audio = ears.listen(wait=follow_up)
             follow_up = 0
-            if not text or is_noise(text, asked):
+            if not text or is_noise(text, asked) or is_echo(text, brain.last_reply()):
                 continue
         else:
             # "hey Jarvis" anywhere; on camera also "Jarvis, ..." or a hand sign while speaking
@@ -100,8 +117,8 @@ def run_voice(memory, camera: bool = True):
             if heard and heard.how != "wake":
                 print(f"  [eyes] {heard.how}" + (f" ({heard.gesture})" if heard.gesture else ""))
             if not text:  # the wake word, or just "Jarvis" on its own
-                mouth.say(f"Yes, {config.USER_TITLE}?")
-                text, audio = ears.listen()
+                how = mouth.say(f"Yes, {config.USER_TITLE}?")
+                text, audio = ears.after_barge() if how == "voice" else ears.listen()
                 if not text:
                     continue
         speaker, score = voice_id.identify(audio) if audio is not None else ("unknown", 0.0)
@@ -121,14 +138,18 @@ def run_voice(memory, camera: bool = True):
         if not asked and DONE.fullmatch(said):  # "thanks" / "that's all" ends it, no reply needed
             asked = False
             continue
-        answer = brain.think(text, speaker=speaker)
-        interrupted = mouth.say(answer)
+        asked_at = time.time()
+        interrupted = mouth.say_stream(brain.think_stream(text, speaker=speaker))  # speaks as it's written
+        if mouth.first_audio_at:
+            hud.info(first_audio=round(mouth.first_audio_at - asked_at, 2))
+        answer = brain.last_reply()
         woken = interrupted == "wake"
+        barged = interrupted == "voice"
         asked = answer.rstrip().endswith("?")
         if interrupted == "palm":  # told to stop: no follow-up window either
             asked = False
             continue
-        if not woken and config.FOLLOW_UP:
+        if not (woken or barged) and config.FOLLOW_UP:
             # a question waits for its answer; anything else leaves a moment for "and also..."
             follow_up = config.FOLLOW_UP_QUESTION_SECONDS if asked else config.FOLLOW_UP_SECONDS
 
@@ -173,6 +194,14 @@ def eyes_switch(eyes, on: bool) -> str:
     hud.info(camera=on)
     return (f"Watching again, {config.USER_TITLE}." if on else
             f"Eyes closed, {config.USER_TITLE}. The camera is free; say \"hey Jarvis\" when you need me.")
+
+
+def is_echo(text: str, last_reply: str) -> bool:
+    """True if what was "heard" is just JARVIS's own last reply picked up by the mic (no echo cancelling):
+    nearly every word of it is in that reply."""
+    heard = re.findall(r"[a-z']+", text.lower())
+    said = set(re.findall(r"[a-z']+", last_reply.lower()))
+    return len(heard) >= 3 and sum(w in said for w in heard) / len(heard) >= 0.8
 
 
 def is_noise(text: str, asked: bool = False) -> bool:

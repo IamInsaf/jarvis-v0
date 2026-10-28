@@ -15,6 +15,7 @@ from faster_whisper import WhisperModel
 
 import config
 import hud
+from vad import SpeechDetector
 
 RATE = 16000
 FRAME = 1280  # 80 ms frames, what openWakeWord expects
@@ -41,8 +42,52 @@ def without_name(text: str) -> str | None:
     return text[m.end():].strip() if m else None
 
 
+# a request that trails off like this isn't finished: "set a timer for, um", "remind me to call mum and"
+_UNFINISHED = re.compile(r"(?:,|\b(?:and|or|but|so|because|then|um+|uh+|er+|like|the|a|an|to|for|with|of|"
+                         r"my|your|about|that|if|when|which|is|are|also|plus|in|at|from|into|by))\W*$", re.I)
+
+
+def sounds_unfinished(text: str) -> bool:
+    """True if the transcript stops mid-thought, so it's worth listening a moment longer."""
+    t = text.strip()
+    return bool(t) and not t.endswith(("?", "!")) and bool(_UNFINISHED.search(t.rstrip(". ")))
+
+
 def _rms(frame: np.ndarray) -> float:
     return float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
+
+
+class BargeIn:
+    """Hears the user start talking while JARVIS speaks, without a wake word. With no echo cancelling,
+    the mic also picks up JARVIS's own voice from the speakers, so for the first moments of each reply it
+    learns how loud that echo is relative to what's playing (`echo` gives the current output loudness),
+    and after that only speech clearly louder than the expected echo counts."""
+
+    def __init__(self, echo):
+        self.echo = echo
+        self.playing_since = None  # when JARVIS's voice first came out of the speakers
+        self.ratio = 0.0   # mic loudness per unit of output loudness, i.e. how much of JARVIS the mic hears
+        self.run = 0       # frames in a row that sounded like the user talking
+        self.recent: deque = deque(maxlen=PREROLL_FRAMES)  # kept so their first words aren't lost
+
+    def feed(self, frame: np.ndarray, vad) -> bool:
+        """True once the user has been talking over JARVIS for BARGE_IN_MS."""
+        if not self.recent:  # a new reply: forget what the detector heard before it
+            vad.reset()
+        self.recent.append(frame)
+        rms, out = _rms(frame), self.echo()
+        if out > 1 and self.playing_since is None:
+            self.playing_since = time.time()
+        if self.playing_since is not None and time.time() - self.playing_since < config.BARGE_IN_GRACE:
+            self.ratio = max(self.ratio, rms / max(out, 1.0))
+            vad.probability(frame)  # keep the detector's memory of the audio current
+            self.run = 0
+            return False
+        # before JARVIS makes a sound (still thinking) there's no echo, just the room
+        floor = config.BARGE_IN_MARGIN * self.ratio * out + config.SILENCE_RMS
+        speaking = vad.is_speech(frame) and rms > floor
+        self.run = self.run + 1 if speaking else 0
+        return self.run * FRAME / RATE * 1000 >= config.BARGE_IN_MS
 
 
 class Ears:
@@ -51,6 +96,7 @@ class Ears:
         self.wake = Model(wakeword_models=["hey_jarvis"], inference_framework="onnx")
         self.stt = WhisperModel(config.WHISPER_MODEL, device=config.WHISPER_DEVICE, compute_type="int8")
         self.stt_lock = threading.Lock()  # the type mode hotkey transcribes on its own thread
+        self.vad = SpeechDetector()  # when someone is talking, as opposed to just noise
         self.q: queue.Queue = queue.Queue()
         self.tap: list | None = None  # while set, mic audio goes here instead of to self.q (fingers.py)
         self.stream = sd.InputStream(samplerate=RATE, channels=1, dtype="int16",
@@ -130,26 +176,65 @@ class Ears:
         """Poll the mic for the wake word until `done()` is true (e.g. JARVIS has
         finished speaking). Lets the user interrupt JARVIS mid-sentence by saying
         its name again. Returns True if the wake word was heard."""
+        return self.watch_for_interrupt(done) == "wake"
+
+    def watch_for_interrupt(self, done, barge: "BargeIn | None" = None) -> str | None:
+        """Poll the mic until `done()` while JARVIS speaks. Returns "wake" for the wake word, "voice" if
+        `barge` heard the user start talking over it (see after_barge), None if nobody interrupted."""
         self.flush()
         while not done():
             try:
                 frame = self.q.get(timeout=0.08)
             except queue.Empty:
                 continue
-            scores = self.wake.predict(frame)
-            if max(scores.values()) >= config.WAKE_THRESHOLD:
-                return True
-        return False
+            if heard := self._interrupt(frame, barge):
+                return heard
+        return None
+
+    def heard_interrupt(self, barge: "BargeIn | None" = None) -> str | None:
+        """Like watch_for_interrupt, but only looks at the mic audio queued since the last look, without
+        waiting: for while JARVIS is busy writing the next clause and can't sit and watch."""
+        while True:
+            try:
+                frame = self.q.get_nowait()
+            except queue.Empty:
+                return None
+            if heard := self._interrupt(frame, barge):
+                return heard
+
+    def heard_wake_word(self) -> bool:
+        return self.heard_interrupt() == "wake"
+
+    def _interrupt(self, frame: np.ndarray, barge: "BargeIn | None") -> str | None:
+        if max(self.wake.predict(frame).values()) >= config.WAKE_THRESHOLD:
+            return "wake"
+        if barge is not None and barge.feed(frame, self.vad):
+            self.barge_preroll = list(barge.recent)
+            return "voice"
+        return None
+
+    def after_barge(self) -> tuple[str, np.ndarray | None]:
+        """What the user said when they talked over JARVIS: the words that interrupted it plus the rest."""
+        frames, self.barge_preroll = getattr(self, "barge_preroll", []), []
+        before = hud.current()
+        hud.state("listening")
+        try:
+            return self._finish_thought(*self._transcribe(self._record(0, frames=frames)))
+        finally:
+            hud.state("idle" if before == "listening" else before)
 
     def _record(self, wait: float, frames: list | None = None):
         """Record until silence. `frames` is audio already heard (pre-roll), which counts as started."""
         frames = frames or []
         silent, started = 0.0, bool(frames)
         t0, frame_sec = time.time(), FRAME / RATE
+        self.vad.reset()
+        for frame in frames:  # the pre-roll primes the detector
+            self.vad.probability(frame)
         while True:
             frame = self.q.get()
             frames.append(frame)
-            if _rms(frame) > config.SILENCE_RMS:
+            if self.vad.is_speech(frame):
                 started, silent = True, 0.0
             else:
                 silent += frame_sec
@@ -171,9 +256,22 @@ class Ears:
         before = hud.current()  # a yes/no asked mid-request goes back to "thinking" afterwards
         hud.state("listening")
         try:
-            return self._transcribe(self._record(wait))
+            return self._finish_thought(*self._transcribe(self._record(wait)))
         finally:
             hud.state("idle" if before == "listening" else before)
+
+    def _finish_thought(self, text: str, audio: np.ndarray | None) -> tuple[str, np.ndarray | None]:
+        """If the request trails off ("remind me to call mum and"), keep listening a moment for the rest
+        and transcribe it all together, instead of answering half a sentence."""
+        for _ in range(2):
+            if not sounds_unfinished(text):
+                break
+            print(f"  [ears] sounds unfinished: {text!r}, listening on")
+            more = self._record(config.CONTINUE_SECONDS)
+            if more is None:
+                break
+            text, audio = self._transcribe(np.concatenate([(audio * 32768).astype(np.int16), more]))
+        return text, audio
 
     def _transcribe(self, audio: np.ndarray | None) -> tuple[str, np.ndarray | None]:
         if audio is None:

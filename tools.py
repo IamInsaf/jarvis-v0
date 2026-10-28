@@ -9,7 +9,10 @@ import requests
 
 import apps
 import brains
+import briefing
 import config
+import desktop
+import executor
 import radios
 import router
 import rules
@@ -50,6 +53,8 @@ class Tools:
         self.todos = Todos(config.DB_PATH)
         self.ctx = PluginContext(memory, confirm, speak)
         self.scheduler = Scheduler(config.DB_PATH, speak)
+        briefing.start_daily(lambda: speak(briefing.compose(self.scheduler, self.todos)))  # if BRIEFING_TIME is set
+        self._opened = (0, None)  # (window in front, when) at the last open_app, see _settle
         self.plugins = {}  # tool name -> loaded module
         self.plugin_paths = {}  # tool name -> its file (named after the description, not the tool)
         self._loaded_plugin_files = set()
@@ -76,6 +81,8 @@ class Tools:
                 {"text": "what to remind them about, e.g. 'call mom'",
                  "when": "exactly as the user said it, e.g. 'in 20 minutes', 'at 5 pm', 'tomorrow at 9'"}),
             _fn("list_schedule", "List the pending timers, alarms and reminders, with time left.", {}),
+            _fn("briefing", "The user's day at a glance: date, what's scheduled today, top of the to-do list "
+                "('good morning', 'brief me', 'what's my day look like').", {}),
             _fn("cancel_schedule", "Cancel timers, alarms or reminders.",
                 {"which": "which ones, as the user said it, e.g. 'the tea timer', 'all alarms', 'my 7 am alarm'"}),
             _fn("list_workspace",
@@ -100,6 +107,23 @@ class Tools:
                 {"name": "the app's name as the user said it"}),
             _fn("close_app", "Close an application that's open on this computer ('close chrome', 'quit notepad').",
                 {"name": "the app's name as the user said it"}),
+            _fn("press_keys", "Press a key or keyboard shortcut in the window that has focus ('press ctrl s', "
+                "'hit enter', 'alt tab').",
+                {"keys": "the keys, like 'ctrl+s', 'enter', 'alt+tab' or 'win+d'"}),
+            _fn("type_text", "Type text into the window that has focus, at the cursor ('type hello world').",
+                {"text": "exactly the text to type, as the user said it"}),
+            _fn("switch_window", "Bring an open window or app to the front ('switch to chrome', 'go to spotify').",
+                {"name": "the app or window as the user said it"}),
+            _fn("media", "Media and volume: play, pause, next track, previous, mute, volume up or down, or set "
+                "the volume ('volume 30').",
+                {"action": "what to do, e.g. 'pause', 'next', 'volume up', 'volume 30'"}),
+            _fn("look_at_screen", "Look at what's on the user's screen and answer a question about it "
+                "('what's on my screen', 'read this error').",
+                {"question": "what the user wants to know about the screen"}),
+            _fn("run_shell", "Run one PowerShell command on this computer, for system information or a task no other "
+                "tool covers ('how much disk space is free', 'what's my IP address'). Prefer read-only Get- "
+                "commands; anything that changes the system is read back to the user first.",
+                {"command": "one PowerShell command"}),
             _fn("set_radio", "Turn Wi-Fi and/or Bluetooth on or off on this computer.",
                 {"radio": "wifi, bluetooth or both", "state": "on or off"}),
             _fn("set_brain", "Switch the AI model you think with ('switch to gemma', 'use the 9B').",
@@ -186,6 +210,12 @@ class Tools:
         return f"Removed the '{match}' ability."
 
     def run(self, name: str, args: dict) -> str:
+        tier, why = executor.check(name, args)
+        if tier == "block":
+            print(f"  [executor] blocked {name}: {why}")
+            return f"I won't do that: it would mean {why}. Nothing was run."
+        if tier == "confirm" and not self.confirm(why):
+            return "Cancelled; nothing was run."
         try:
             if name == "get_time":
                 return datetime.now().strftime("%A %d %B %Y, %I:%M %p")
@@ -207,6 +237,8 @@ class Tools:
                 return self._set_at("reminder", args["text"], args["when"])
             if name == "list_schedule":
                 return self.scheduler.summary()
+            if name == "briefing":
+                return briefing.compose(self.scheduler, self.todos)
             if name == "cancel_schedule":
                 return self.scheduler.cancel(args["which"])
             if name == "list_workspace":
@@ -224,7 +256,22 @@ class Tools:
             if name == "list_websites":
                 return self.builder.projects()
             if name == "open_app":
+                self._opened = (desktop.foreground(), datetime.now())
                 return apps.open_app(args["name"])
+            if name == "press_keys":
+                self._settle()
+                return desktop.press_keys(args.get("keys", ""))
+            if name == "type_text":
+                self._settle()
+                return desktop.type_text(args.get("text", ""))
+            if name == "switch_window":
+                return desktop.switch_window(args.get("name", ""))
+            if name == "media":
+                return desktop.media(args.get("action", "") or self.user_text)
+            if name == "look_at_screen":
+                return desktop.look_at_screen(args.get("question", "") or self.user_text)
+            if name == "run_shell":
+                return desktop.run_shell(args.get("command", ""))
             if name == "close_app":
                 return apps.close_app(args["name"])
             if name == "set_radio":
@@ -265,6 +312,14 @@ class Tools:
             return f"Unknown tool: {name}"
         except Exception as e:  # tools must never crash the loop
             return f"Tool {name} failed: {e}"
+
+    def _settle(self):
+        """Keys or typing right after open_app in the same request ("open notepad and type hello") wait for
+        the new window to take focus, or they'd land in whatever was in front."""
+        before, when = self._opened
+        if when and (datetime.now() - when).total_seconds() < 15:
+            desktop.wait_for_new_window(before)
+            self._opened = (0, None)
 
     def _engine(self, said) -> str:
         """Who builds: what the user said wins over the model's pick, which mixed the two up."""

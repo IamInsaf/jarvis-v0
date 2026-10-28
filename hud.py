@@ -25,7 +25,7 @@ _events: deque = deque(maxlen=200)
 _next_id = 1
 _state = "idle"
 _levels = {"mic": (0.0, 0.0), "voice": (0.0, 0.0)}  # source -> (0..1, when)
-_info = {"started": time.time(), "mode": None, "camera": None}
+_info = {"started": time.time(), "mode": None, "camera": None, "first_audio": None}
 _server = None
 
 
@@ -63,7 +63,8 @@ def level(source: str, value: float):
 
 
 def info(**kw):
-    """Slow-changing facts the System panel shows: mode, camera."""
+    """Slow-changing facts the System panel shows: mode, camera, first_audio (seconds from the end of
+    the request to JARVIS's first word, last turn)."""
     _info.update(kw)
     emit("info", **kw)
 
@@ -385,6 +386,7 @@ header { grid-column:1 / -1; display:flex; align-items:center; justify-content:s
     <div class="row"><span>THINKING</span><span id="think">—</span></div>
     <div class="row"><span>MODE</span><span id="mode">—</span></div>
     <div class="row"><span>CAMERA</span><span id="camera">—</span></div>
+    <div class="row"><span>FIRST WORD</span><span id="firstaudio">—</span></div>
     <div class="meter"><span>CPU</span><div class="bar"><i id="cpu"></i></div><span id="cpuv">—</span></div>
     <div class="meter"><span>RAM</span><div class="bar"><i id="ram"></i></div><span id="ramv">—</span></div>
     <div class="meter"><span>MIC</span><div class="bar fast"><i id="mic"></i></div><span id="micv">0</span></div>
@@ -636,6 +638,7 @@ function renderSnap(d) {
   $("#think").textContent = s.think ? "ON" : "OFF";
   $("#mode").textContent = (s.mode || "—").toUpperCase();
   $("#camera").textContent = s.camera == null ? "DISABLED" : s.camera ? "WATCHING" : "OFF";
+  $("#firstaudio").textContent = s.first_audio == null ? "—" : s.first_audio.toFixed(1) + " S";
   bar("#cpu", s.cpu); $("#cpuv").textContent = pct(s.cpu);
   bar("#ram", s.ram); $("#ramv").textContent = pct(s.ram);
   if (state === "offline") setState(s.state);

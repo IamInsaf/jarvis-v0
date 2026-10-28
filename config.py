@@ -35,6 +35,15 @@ VOICE_ID_SOFT_THRESHOLD = float(os.getenv("VOICE_ID_SOFT_THRESHOLD", "0.6"))
 VOICE_ID_STICKY_SECONDS = float(os.getenv("VOICE_ID_STICKY_SECONDS", "300"))
 SILENCE_RMS = float(os.getenv("SILENCE_RMS", "500"))     # raise if your room is noisy
 SILENCE_SECONDS = float(os.getenv("SILENCE_SECONDS", "0.9"))
+# chance (0..1) from the Silero voice detector that a moment of audio is speech; raise if noise counts
+VAD_THRESHOLD = float(os.getenv("VAD_THRESHOLD", "0.5"))
+# a request that trails off ("set a timer for, um") waits this long for the rest of it
+CONTINUE_SECONDS = float(os.getenv("CONTINUE_SECONDS", "1.5"))
+# talk over JARVIS to interrupt it, no wake word needed. Turn off if it cuts itself off on loud speakers
+BARGE_IN = os.getenv("BARGE_IN", "true").lower() == "true"
+BARGE_IN_MS = float(os.getenv("BARGE_IN_MS", "320"))         # this much talking over it stops the reply
+BARGE_IN_GRACE = float(os.getenv("BARGE_IN_GRACE", "0.6"))   # first seconds of a reply: learning its echo
+BARGE_IN_MARGIN = float(os.getenv("BARGE_IN_MARGIN", "2.5"))  # how much louder than its echo you must be
 MAX_RECORD_SECONDS = float(os.getenv("MAX_RECORD_SECONDS", "15"))
 # after a reply, keep listening this long for a follow-up without the wake word (false = always need it)
 FOLLOW_UP = os.getenv("FOLLOW_UP", "true").lower() == "true"
@@ -92,3 +101,5 @@ HUD_PORT = int(os.getenv("HUD_PORT", "8766"))
 
 # --- Personality ---
 USER_TITLE = os.getenv("USER_TITLE", "sir")
+# say the day's briefing (schedule, to-dos) unprompted every day at this time, e.g. "07:30"; empty = never
+BRIEFING_TIME = os.getenv("BRIEFING_TIME", "")
