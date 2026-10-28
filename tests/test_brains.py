@@ -38,6 +38,9 @@ class FakeClient:
     def generate(self, model, keep_alive=None):
         self.unloaded.append(model)
 
+    def ps(self):  # what's in memory right now
+        return SimpleNamespace(models=[SimpleNamespace(model="qwen3.5:4b"), SimpleNamespace(model="qwen2.5-coder:7b")])
+
 
 class BrainsTest(unittest.TestCase):
     def setUp(self):
@@ -47,7 +50,9 @@ class BrainsTest(unittest.TestCase):
                    mock.patch.object(brains, "_installed_cache", (0.0, [])),
                    mock.patch.object(brains, "SAVE_PATH", Path(self.tmp.name) / "brain.json"),
                    mock.patch.object(config, "OLLAMA_MODEL", "qwen3.5:4b"),
-                   mock.patch.object(config, "OLLAMA_THINK", True)]
+                   mock.patch.object(config, "OLLAMA_THINK", True),
+                   mock.patch.object(config, "BRAIN_IDLE_MINUTES", 10.0),
+                   mock.patch.object(brains, "awake", True)]
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
@@ -97,6 +102,42 @@ class BrainsTest(unittest.TestCase):
         brains.SAVE_PATH.write_text('{"model": "mistral:7b"}')
         brains.load_saved()
         self.assertEqual(config.OLLAMA_MODEL, "qwen3.5:4b")
+
+    def test_parse_brain_off_and_on(self):
+        for said in ("turn off your brain", "Jarvis, switch off your brain please", "brain off",
+                     "shut your brain down", "go brainless", "turn the model off"):
+            self.assertEqual(brains.parse(said), ("brain_off", {}), said)
+        for said in ("turn on your brain", "jarvis, brain on please", "wake up your brain", "switch your brain on"):
+            self.assertEqual(brains.parse(said), ("brain_on", {}), said)
+        self.assertEqual(brains.parse("switch your brain to gemma"), ("set_brain", {"model": "gemma"}))
+        for other in ("turn off the lights", "my brain hurts", "turn on wifi"):
+            self.assertIsNone(brains.parse(other), other)
+
+    def test_sleep_unloads_everything_and_wake_loads_again(self):
+        self.assertIn("Brain off", brains.sleep())
+        self.assertFalse(brains.awake)
+        self.assertEqual(self.client.unloaded, ["qwen3.5:4b", "qwen2.5-coder:7b"])
+        self.assertIn("already off", brains.sleep())
+        self.assertIn("Turn it on first", brains.switch("gemma"))
+        self.assertEqual(config.OLLAMA_MODEL, "qwen3.5:4b")
+        self.assertIn("Brain on", brains.wake())
+        self.assertTrue(brains.awake)
+        self.assertEqual(self.client.chats[-1][0], "qwen3.5:4b")
+        self.assertEqual(self.client.chats[-1][1]["keep_alive"], "10m")
+
+    def test_wake_failure_stays_off(self):
+        brains.sleep()
+
+        def down(*a, **kw):
+            raise ConnectionError("refused")
+        self.client.chat = down
+        self.assertIn("wouldn't load", brains.wake())
+        self.assertFalse(brains.awake)
+
+    def test_keep_alive(self):
+        self.assertEqual(llm.keep_alive(), "10m")
+        config.BRAIN_IDLE_MINUTES = 0
+        self.assertEqual(llm.keep_alive(), -1)
 
     def test_think_only_for_models_that_can(self):
         self.assertTrue(llm.think())

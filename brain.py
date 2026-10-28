@@ -5,6 +5,7 @@
 import json
 import re
 
+import brains
 import config
 import hud
 import intents
@@ -54,6 +55,9 @@ _SAY_AS_IS = {"open_app", "close_app", "build_website", "change_website", "show_
               "list_websites", "list_workspace", "send_message", "save_contact", "list_contacts", "forget_contact",
               "add_task", "list_tasks", "complete_task", "remove_task", "set_radio", "set_brain", "which_brain",
               "list_brains", "briefing", "press_keys", "type_text", "switch_window", "media", "look_at_screen"}
+# control commands kept out of the conversation: after "Brain off, sir" in its history, a woken
+# model answered "I am currently offline" to the very request that woke it
+_NOT_REMEMBERED = {"brain_off", "brain_on"}
 # "open notepad and type hello": after these, a request that goes on to type or press something continues
 _LEADS_ON = {"open_app", "switch_window"}
 _AND_THEN = re.compile(r"\b(?:and|then)\b.*\b(?:type|write|press|hit|enter|search|paste)\b", re.I)
@@ -162,6 +166,7 @@ class Brain:
     def _reply(self, messages: list) -> str:
         """The final reply in one call (not streamed)."""
         msg = llm.client.chat(model=config.OLLAMA_MODEL, messages=messages, think=llm.think(),
+                              keep_alive=llm.keep_alive(),
                               options={"temperature": config.OLLAMA_TEMPERATURE,
                                        "num_ctx": config.OLLAMA_NUM_CTX, "num_predict": llm.REPLY_TOKENS}).message
         # with no tools on the final call, small models sometimes write a tool call out as text instead
@@ -188,12 +193,23 @@ class Brain:
             hud.node("rules", name)
             hud.node("tools", name)
             result = self.tools.run(name, args)
+            if name in _NOT_REMEMBERED:
+                return self._finish(user_text, None, say(result))
             # recorded as a real tool call so the model sees how these actually get done
             return self._finish(user_text, [user_msg,
                                             {"role": "assistant", "content": "",
                                              "tool_calls": [{"function": {"name": name, "arguments": args}}]},
                                             {"role": "tool", "content": result, "tool_name": name}], say(result))
 
+        if not brains.awake:  # everything from here on needs the LLM: ask rather than load it by surprise
+            title = config.USER_TITLE
+            if not self.tools.confirm(f"My brain's off, {title}. Turn it on?"):
+                return f"Staying brainless, {title}."
+            hud.emit("ack", text=f"Waking my brain, {title}.")
+            yield "ack", f"Waking my brain, {title}."
+            said = brains.wake()
+            if not brains.awake:  # it wouldn't load: say why instead of trying the LLM anyway
+                return said
         previous = self._previous_exchange()
         category = intents.route(user_text, previous, self.tools.plugins)
         print(f"  [route] {category or 'unsure -> all tools'}")
@@ -326,6 +342,7 @@ class Brain:
         hud.node("llm", "deciding")
         for _ in range(2):
             content = llm.client.chat(model=config.OLLAMA_MODEL, format=schema, think=llm.think(),
+                                      keep_alive=llm.keep_alive(),
                                       messages=[*messages, {"role": "system", "content": instruction}],
                                       options={"temperature": 0, "num_ctx": config.OLLAMA_NUM_CTX,
                                                "num_predict": llm.JSON_TOKENS}).message.content
@@ -346,9 +363,10 @@ class Brain:
         turn = self.history[-1]
         return f"User: {turn[0]['content']}\nJARVIS: {turn[-1]['content']}"
 
-    def _finish(self, user_text: str, turn: list, answer: str) -> str:
-        turn.append({"role": "assistant", "content": answer})  # cleaned of any <think> text
-        self.history = [*self.history, turn][-config.HISTORY_TURNS:]
+    def _finish(self, user_text: str, turn: list | None, answer: str) -> str:
+        if turn is not None:  # None: logged, but not part of the conversation the model sees
+            turn.append({"role": "assistant", "content": answer})  # cleaned of any <think> text
+            self.history = [*self.history, turn][-config.HISTORY_TURNS:]
         self.memory.log("user", user_text)
         self.memory.log("assistant", answer)
         hud.node("mouth")

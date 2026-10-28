@@ -130,6 +130,8 @@ class Tools:
                 {"model": "the model as the user said it, e.g. 'gemma' or 'qwen 9b'"}),
             _fn("which_brain", "Say which AI model you're running on right now.", {}),
             _fn("list_brains", "Say which AI models are installed that you can switch to.", {}),
+            _fn("brain_off", "Unload your AI model to free the computer's memory and GPU ('turn off your brain').", {}),
+            _fn("brain_on", "Load your AI model again after it was turned off ('turn on your brain').", {}),
             _fn("send_message", "Text someone on WhatsApp ('text my mom: I'll be late'). Reads it back and asks "
                 "before sending.",
                 {"contact": "who to text, e.g. 'mom' or 'John'", "message": "what to say, as the user said it"}),
@@ -282,6 +284,10 @@ class Tools:
                 return brains.current()
             if name == "list_brains":
                 return brains.describe()
+            if name == "brain_off":
+                return brains.sleep()
+            if name == "brain_on":
+                return brains.wake()
             if name == "send_message":
                 return self.messenger.send(args.get("contact", ""), args.get("message", ""), self.user_text)
             if name == "save_contact":

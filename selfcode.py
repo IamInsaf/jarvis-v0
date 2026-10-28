@@ -219,7 +219,7 @@ def _draft(chat: list, model: str, confirm, description: str) -> str | None:
         code = router.ask_cloud("\n\n".join(m["content"] for m in chat), confirm,
                                 label=f"draft a new ability for: {description}")
         return None if code.startswith(("The user declined", "Cloud model is disabled")) else code
-    resp = llm.client.chat(model=model, messages=chat,
+    resp = llm.client.chat(model=model, messages=chat, keep_alive=llm.keep_alive(),
                            options={"temperature": 0.2, "num_ctx": config.OLLAMA_NUM_CTX,
                                     "num_predict": llm.CODE_TOKENS})
     return resp.message.content or ""

@@ -381,6 +381,7 @@ class _Links(html.parser.HTMLParser):
 def _json(model: str, prompt: str, schema: dict, tokens: int = llm.JSON_TOKENS) -> dict:
     for _ in range(2):
         resp = llm.client.chat(model=model, format=schema, messages=[{"role": "user", "content": prompt}],
+                               keep_alive=llm.keep_alive(),
                                options={"temperature": 0.2, "num_ctx": config.OLLAMA_NUM_CTX,
                                         "num_predict": tokens})
         try:
@@ -391,7 +392,7 @@ def _json(model: str, prompt: str, schema: dict, tokens: int = llm.JSON_TOKENS) 
 
 
 def _code(model: str, prompt: str) -> str:
-    resp = llm.client.chat(model=model, messages=[{"role": "user", "content": prompt}],
+    resp = llm.client.chat(model=model, messages=[{"role": "user", "content": prompt}], keep_alive=llm.keep_alive(),
                            options={"temperature": 0.2, "num_ctx": config.OLLAMA_NUM_CTX,
                                     "num_predict": FILE_TOKENS})
     text = selfcode._strip_fences(resp.message.content or "")

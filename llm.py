@@ -19,6 +19,12 @@ ERRORS = (httpx.HTTPError, ollama.ResponseError, ConnectionError)
 _capabilities: dict[str, list] = {}
 
 
+def keep_alive():
+    """How long Ollama keeps a model loaded after its last call (BRAIN_IDLE_MINUTES; -1 = for good).
+    The next call after that just loads it again."""
+    return f"{config.BRAIN_IDLE_MINUTES:g}m" if config.BRAIN_IDLE_MINUTES > 0 else -1
+
+
 def capabilities(model: str) -> list:
     """What Ollama says the model can do: "tools", "thinking", "vision"... ([] if Ollama can't say)."""
     if model not in _capabilities:
@@ -75,6 +81,7 @@ def stream_chat(messages: list, num_predict: int = REPLY_TOKENS):
     """The model's reply as it's written, a piece at a time, with any thinking or written-out tool calls removed."""
     tags = _TagFilter()
     for part in client.chat(model=config.OLLAMA_MODEL, messages=messages, think=think(), stream=True,
+                            keep_alive=keep_alive(),
                             options={"temperature": config.OLLAMA_TEMPERATURE, "num_ctx": config.OLLAMA_NUM_CTX,
                                      "num_predict": num_predict}):
         if text := tags.feed(part.message.content or ""):

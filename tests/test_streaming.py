@@ -8,6 +8,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import brain  # noqa: E402
+import brains  # noqa: E402
 import config  # noqa: E402
 import intents  # noqa: E402
 import llm  # noqa: E402
@@ -157,6 +158,59 @@ class BrainStreamTest(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertEqual(b.tools.ran[0][0], "get_time")
         self.assertEqual(self.client.streamed, 0)
+
+    def test_every_call_says_how_long_to_stay_loaded(self):
+        b = self.make("Fine, sir.")
+        calls = []
+        chat = self.client.chat
+        self.client.chat = lambda *a, **kw: calls.append(kw) or chat(*a, **kw)
+        b.think("how are you")
+        self.assertTrue(calls)
+        self.assertTrue(all("keep_alive" in kw for kw in calls))
+
+    def brainless(self, answer: bool, woke: bool = True):
+        b = self.make("Here is a joke, sir.")
+        self.asked = []
+        b.tools.confirm = lambda q: self.asked.append(q) or answer
+
+        def wake():
+            brains.awake = woke
+            return "Brain on, sir." if woke else "My brain wouldn't load, sir."
+        for p in [mock.patch.object(brains, "awake", False), mock.patch.object(brains, "wake", wake)]:
+            p.start()
+            self.addCleanup(p.stop)
+        return b
+
+    def test_brain_off_asks_and_no_stays_off(self):
+        b = self.brainless(answer=False)
+        self.assertEqual(b.think("tell me a joke"), "Staying brainless, sir.")
+        self.assertEqual(self.asked, ["My brain's off, sir. Turn it on?"])
+        self.assertEqual(self.client.streamed, 0)
+        self.assertFalse(brains.awake)
+
+    def test_brain_off_yes_wakes_and_answers(self):
+        b = self.brainless(answer=True)
+        out = list(b.think_stream("tell me a joke"))
+        self.assertEqual(out[0], "Waking my brain, sir.")
+        self.assertEqual("".join(out[1:]), "Here is a joke, sir.")
+        self.assertTrue(brains.awake)
+
+    def test_brain_off_wake_fails(self):
+        b = self.brainless(answer=True, woke=False)
+        self.assertEqual(b.think("tell me a joke"), "My brain wouldn't load, sir.")
+        self.assertEqual(self.client.streamed, 0)
+
+    def test_brain_off_and_on_stay_out_of_the_conversation(self):
+        b = self.make("unused")
+        b.think("turn off your brain")
+        self.assertEqual(b.tools.ran[-1][0], "brain_off")
+        self.assertEqual(b.history, [])
+
+    def test_brain_off_rules_still_work_without_asking(self):
+        b = self.brainless(answer=True)
+        b.think("what time is it")
+        self.assertEqual(b.tools.ran[0][0], "get_time")
+        self.assertEqual(self.asked, [])
 
     def test_ollama_down_is_spoken(self):
         b = self.make("x")

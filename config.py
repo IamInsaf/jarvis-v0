@@ -23,6 +23,9 @@ OLLAMA_THINK = os.getenv("OLLAMA_THINK", "0") == "1"
 OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "180"))
 # writes new abilities (selfcode.py); falls back to OLLAMA_MODEL if it isn't pulled
 CODER_MODEL = os.getenv("CODER_MODEL", "qwen2.5-coder:7b")
+# minutes of no LLM calls after which Ollama unloads the model to free RAM/VRAM (the next request
+# reloads it, a few seconds slower). 0 = keep it loaded. "Turn off your brain" unloads it at once.
+BRAIN_IDLE_MINUTES = float(os.getenv("BRAIN_IDLE_MINUTES", "10"))
 
 # --- Ears ---
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small.en")   # tiny.en / base.en / small.en / medium.en

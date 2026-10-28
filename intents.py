@@ -157,6 +157,7 @@ def _pick(user_text: str, previous: str, cats: dict) -> str | None:
         try:
             # same num_ctx as the main call: a different one makes Ollama reload the whole model
             resp = llm.client.chat(model=config.OLLAMA_MODEL, format=schema, think=llm.think(),
+                                   keep_alive=llm.keep_alive(),
                                    messages=[{"role": "system", "content": system},
                                              {"role": "user", "content": user_text}],
                                    options={"temperature": 0, "num_ctx": config.OLLAMA_NUM_CTX,

@@ -180,7 +180,7 @@ def look_at_screen(question: str) -> str:
     buf = io.BytesIO()
     shot.save(buf, format="PNG")
     q = str(question).strip() or "What's on the screen?"
-    msg = llm.client.chat(model=model, think=False, messages=[{
+    msg = llm.client.chat(model=model, think=False, keep_alive=llm.keep_alive(), messages=[{
         "role": "user", "images": [base64.b64encode(buf.getvalue()).decode()],
         "content": f"This is a screenshot of the user's screen. {q}\nAnswer in one to three short spoken "
                    "sentences, no markdown. Only describe what you can actually see."}],

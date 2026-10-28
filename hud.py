@@ -116,8 +116,9 @@ def snapshot(db_path: str | None = None) -> dict:
                 db, "SELECT kind, label, due, created FROM schedule WHERE done = 0 AND due > ? ORDER BY due", (now,))]
             data["transcript"] = [{"role": r, "text": t, "ts": ts} for r, t, ts in _rows(
                 db, "SELECT role, content, ts FROM log ORDER BY id DESC LIMIT 14")][::-1]
-    data["system"] = {"model": config.OLLAMA_MODEL, "think": config.OLLAMA_THINK, "ollama": _ollama_up(),
-                      "cpu": _cpu(), "ram": _ram(), "state": _state, **_info}
+    import brains  # here: it imports this module
+    data["system"] = {"model": config.OLLAMA_MODEL if brains.awake else "off", "think": config.OLLAMA_THINK,
+                      "ollama": _ollama_up(), "cpu": _cpu(), "ram": _ram(), "state": _state, **_info}
     data["categories"] = _categories()
     return data
 

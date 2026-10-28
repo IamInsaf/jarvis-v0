@@ -1,6 +1,7 @@
 """Switching the brain model by voice: "switch to gemma", "use the 9B", "which brain are you using?".
 Every caller reads config.OLLAMA_MODEL when it makes a call, so a switch is just reassigning it.
-The choice is saved in data/brain.json and wins over OLLAMA_MODEL from .env on the next start."""
+The choice is saved in data/brain.json and wins over OLLAMA_MODEL from .env on the next start.
+"Turn off your brain" unloads every model from RAM/VRAM and stops all LLM calls until it's turned on again."""
 import json
 import re
 import time
@@ -35,7 +36,17 @@ _SET_NAMED = re.compile(_FILLER + rf"(?:switch|change|swap|set)(?: over| back)? 
 # "switch to gemma": only when it names a model family, so "switch to dark mode" isn't caught
 _SET_BARE = re.compile(_FILLER + r"(?:(?:switch|change|swap|go)(?: over| back)? to|use) (?P<m>.+?)" + _TAIL, re.I)
 
+# "turn off your brain", "brain off", "go brainless" / "turn on your brain", "wake up your brain"
+_OFF = re.compile(_FILLER + rf"(?:(?:turn|switch|shut|power)(?: off| down) (?:your |the |my )?{_BRAIN}|"
+                  rf"(?:turn|switch|shut|power) (?:your |the |my )?{_BRAIN} (?:off|down)|"
+                  rf"(?:your |the )?{_BRAIN} off|go brainless|unload (?:your |the |my )?{_BRAIN})" + _TAIL, re.I)
+_ON = re.compile(_FILLER + rf"(?:(?:turn|switch|power)(?: on| up) (?:your |the |my )?{_BRAIN}|"
+                 rf"(?:turn|switch|power) (?:your |the |my )?{_BRAIN} (?:on|up)|"
+                 rf"(?:your |the )?{_BRAIN} on|wake (?:up )?(?:your |the |my )?{_BRAIN}(?: up)?|"
+                 rf"load (?:your |the |my )?{_BRAIN})" + _TAIL, re.I)
+
 _installed_cache = (0.0, [])
+awake = True  # False after "turn off your brain": nothing may call the LLM (brain.py asks first)
 
 
 def installed() -> list[dict]:
@@ -156,15 +167,15 @@ def switch(spoken: str) -> str:
         return f"I don't have a model called {spoken}, {title}. I have {_available()}."
     if name == config.OLLAMA_MODEL:
         return f"I'm already running on {spoken_name(name)}, {title}."
+    if not awake:
+        return f"My brain is switched off, {title}. Turn it on first, then I'll switch to {spoken_name(name)}."
     caps = llm.capabilities(name)
     if "tools" not in caps:
         return (f"{spoken_name(name)} can't use tools, {title}, so I couldn't set a timer or open an app "
                 "with it. I'll stay as I am.")
     old = config.OLLAMA_MODEL
     try:  # load it now, so the next reply isn't a long silence while Ollama swaps models
-        llm.client.chat(model=name, messages=[{"role": "user", "content": "hi"}],
-                        **({"think": False} if "thinking" in caps else {}),
-                        options={"num_ctx": config.OLLAMA_NUM_CTX, "num_predict": 1})
+        _warm(name, caps)
     except llm.ERRORS as e:
         print(f"  [brain] couldn't load {name}: {type(e).__name__}: {e}")
         return f"{spoken_name(name)} wouldn't load, {title}, so I've stayed on {spoken_name(old)}."
@@ -177,6 +188,53 @@ def switch(spoken: str) -> str:
     print(f"  [brain] {old} -> {name}")
     hud.emit("brain", model=name)
     return f"{spoken_name(name)} is at the helm, {title}. Same me, different engine."
+
+
+def _warm(name: str, caps: list):
+    """Load the model into memory with a one-token reply."""
+    llm.client.chat(model=name, messages=[{"role": "user", "content": "hi"}], keep_alive=llm.keep_alive(),
+                    **({"think": False} if "thinking" in caps else {}),
+                    options={"num_ctx": config.OLLAMA_NUM_CTX, "num_predict": 1})
+
+
+def sleep() -> str:
+    """"Turn off your brain": unload every model Ollama has in memory and stop using the LLM."""
+    global awake
+    title = config.USER_TITLE
+    if not awake:
+        return f"My brain is already off, {title}."
+    awake = False
+    try:  # whatever is loaded: the brain, the coder model, a vision model
+        loaded = [m.model for m in llm.client.ps().models]
+    except (*llm.ERRORS, AttributeError):
+        loaded = []
+    names = list(dict.fromkeys([config.OLLAMA_MODEL, *loaded]))
+    for name in names:
+        try:
+            llm.client.generate(model=name, keep_alive=0)
+        except llm.ERRORS:
+            pass
+    print(f"  [brain] off (unloaded {', '.join(names)})")
+    hud.emit("brain", model="off")
+    return (f"Brain off, {title}. The memory is yours. I can still do the time, timers, alarms and the radios; "
+            "say \"turn on your brain\" for anything else.")
+
+
+def wake() -> str:
+    """"Turn on your brain": load the model again and allow LLM calls."""
+    global awake
+    title = config.USER_TITLE
+    if awake:
+        return f"My brain is already on, {title}."
+    try:
+        _warm(config.OLLAMA_MODEL, llm.capabilities(config.OLLAMA_MODEL))
+    except llm.ERRORS as e:
+        print(f"  [brain] couldn't load {config.OLLAMA_MODEL}: {type(e).__name__}: {e}")
+        return f"My brain wouldn't load, {title}. Ollama may need restarting."
+    awake = True
+    print(f"  [brain] on ({config.OLLAMA_MODEL})")
+    hud.emit("brain", model=config.OLLAMA_MODEL)
+    return f"Brain on, {title}. {spoken_name(config.OLLAMA_MODEL)} at your service."
 
 
 def _save(name: str):
@@ -203,6 +261,10 @@ def load_saved():
 
 def parse(text: str):
     """(tool, args) for a spoken brain switch or question, else None."""
+    if _OFF.match(text):  # before the switch patterns: "switch off your brain" names no model
+        return "brain_off", {}
+    if _ON.match(text):
+        return "brain_on", {}
     if _WHICH.match(text):
         return "which_brain", {}
     if _LIST.match(text):
