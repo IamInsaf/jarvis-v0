@@ -49,12 +49,15 @@ _ARG_ALIASES = {"name": "what_to_call_it", "title": "what_to_call_it"}
 _ONCE_PER_TURN = {"add_feature", "remove_feature", "set_timer", "set_alarm", "set_reminder", "cancel_schedule",
                   "forget", "build_website", "change_website", "open_app", "close_app", "send_message",
                   "save_contact", "forget_contact", "set_radio", "set_brain", "run_shell", "look_at_screen",
-                  "type_text", "switch_window"}
+                  "type_text", "switch_window", "focus_start", "focus_next_step", "focus_snooze", "focus_break",
+                  "focus_park", "focus_resume", "focus_done", "focus_stop"}
 # tools whose result is already the sentence to speak, so it's said as is rather than reworded
 _SAY_AS_IS = {"open_app", "close_app", "build_website", "change_website", "show_website", "stop_website",
               "list_websites", "list_workspace", "send_message", "save_contact", "list_contacts", "forget_contact",
               "add_task", "list_tasks", "complete_task", "remove_task", "set_radio", "set_brain", "which_brain",
-              "list_brains", "briefing", "press_keys", "type_text", "switch_window", "media", "look_at_screen"}
+              "list_brains", "briefing", "press_keys", "type_text", "switch_window", "media", "look_at_screen",
+              "focus_start", "focus_next_step", "focus_snooze", "focus_break", "focus_park", "focus_resume",
+              "focus_done", "focus_stop", "focus_status", "focus_log"}
 # control commands kept out of the conversation: after "Brain off, sir" in its history, a woken
 # model answered "I am currently offline" to the very request that woke it
 _NOT_REMEMBERED = {"brain_off", "brain_on"}

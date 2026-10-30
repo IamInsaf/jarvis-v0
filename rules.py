@@ -158,7 +158,8 @@ def fast_path(text: str):
     title = config.USER_TITLE
     # tool results are already speakable: "Timer set for 5 minutes." -> "Timer set for 5 minutes, sir."
     titled = lambda r: f"{r[:-1]}, {title}{r[-1]}" if r[-1:] in (".", "?", "!") else f"{r}, {title}."  # noqa: E731
-    import briefing  # here, not at the top: briefing uses this module's spoken_clock
+    import briefing  # here, not at the top: briefing and focus use this module's spoken_clock and durations
+    import focus
     if briefing.ASK.match(text):  # "good morning" / "brief me": the day at a glance, no LLM
         return "briefing", {}, lambda r: r
     if _TIME_ASK.match(text):  # get_time gives "Saturday 24 October 2026, 09:05 AM"
@@ -169,6 +170,10 @@ def fast_path(text: str):
         return "time_in", {"place": m["place"].strip()}, titled
     if radio := radios.parse(text):  # "turn on blue jute" went to chat, which claimed it was done
         return "set_radio", {"radio": radio[0], "state": radio[1]}, titled
+    # "focus on the login page", "next step is...", "take a break": before brains, as "switch my focus to X"
+    # and "switch to X" look alike
+    if config.FOCUS_ENABLED and (f := focus.parse(text)):
+        return f[0], f[1], lambda r: r
     if brain := brains.parse(text):  # "switch to gemma", "which brain are you using?"
         return brain[0], brain[1], lambda r: r
     if _SCHED.search(text) and _CANCEL.search(text):

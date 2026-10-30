@@ -1,0 +1,98 @@
+{
+  "_comment": "Focus Guardian settings (focus.py). Minutes can be fractions. test_mode replaces these with seconds-scale values when JARVIS runs with --focus-test or FOCUS_TEST_MODE=1.",
+  "check_seconds": 20,
+  "gentle_minutes": 5,
+  "firm_minutes": 15,
+  "strong_minutes": 30,
+  "repeat_minutes": 10,
+  "idle_minutes": 5,
+  "claude_active_minutes": 5,
+  "snooze_minutes": 10,
+  "break_minutes": 15,
+  "ai_reminders": true,
+  "claude_projects_dir": "~/.claude/projects",
+  "editors": [
+    "code",
+    "cursor",
+    "windsurf",
+    "pycharm64",
+    "pycharm",
+    "idea64",
+    "webstorm64",
+    "sublime_text",
+    "notepad++",
+    "devenv",
+    "zed"
+  ],
+  "editor_titles": [
+    "visual studio code",
+    "cursor",
+    "windsurf",
+    "pycharm",
+    "intellij idea",
+    "webstorm",
+    "sublime text",
+    "notepad++",
+    "visual studio",
+    "zed"
+  ],
+  "terminals": [
+    "windowsterminal",
+    "powershell",
+    "pwsh",
+    "cmd",
+    "wezterm-gui",
+    "alacritty",
+    "claude"
+  ],
+  "video_sites": [
+    "youtube",
+    "netflix",
+    "twitch",
+    "prime video",
+    "disney+",
+    "hulu",
+    "tiktok",
+    "vimeo"
+  ],
+  "distractions": [
+    "reddit",
+    "twitter",
+    "x.com",
+    "instagram",
+    "facebook",
+    "whatsapp",
+    "discord",
+    "steam",
+    "9gag",
+    "hacker news"
+  ],
+  "work_titles": [
+    "localhost",
+    "127.0.0.1",
+    "stack overflow",
+    "docs",
+    "documentation",
+    "github",
+    "claude"
+  ],
+  "neutral_titles": [
+    "jarvis",
+    "task switching",
+    "program manager",
+    "start",
+    "search",
+    "lockapp",
+    "windows default lock screen"
+  ],
+  "test_mode": {
+    "check_seconds": 2,
+    "gentle_minutes": 0.25,
+    "firm_minutes": 0.5,
+    "strong_minutes": 1,
+    "repeat_minutes": 0.5,
+    "idle_minutes": 1,
+    "snooze_minutes": 0.5,
+    "break_minutes": 0.5
+  }
+}
