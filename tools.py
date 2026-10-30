@@ -12,6 +12,7 @@ import brains
 import briefing
 import config
 import desktop
+import hud
 import executor
 import radios
 import router
@@ -215,9 +216,14 @@ class Tools:
         tier, why = executor.check(name, args)
         if tier == "block":
             print(f"  [executor] blocked {name}: {why}")
+            hud.emit("gate", tool=name, tier="blocked", why=why)
             return f"I won't do that: it would mean {why}. Nothing was run."
-        if tier == "confirm" and not self.confirm(why):
-            return "Cancelled; nothing was run."
+        if tier == "confirm":
+            hud.emit("gate", tool=name, tier="confirm", why=why)
+            approved = self.confirm(why)
+            hud.emit("gate", tool=name, tier="approved" if approved else "declined", why="")
+            if not approved:
+                return "Cancelled; nothing was run."
         try:
             if name == "get_time":
                 return datetime.now().strftime("%A %d %B %Y, %I:%M %p")

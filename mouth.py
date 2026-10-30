@@ -120,6 +120,7 @@ class Mouth:
         clean = re.sub(r"[*_#`>]", "", text or "").strip()
         if not clean:
             return None
+        hud.emit("say", text=clean)  # live captions on the HUD and the orb
         audio = np.frombuffer(self._synth(clean), dtype=np.int16)
         # only the main loop may read the mic; a background announcement just plays to the end
         watch = self.ears is not None and threading.current_thread() is threading.main_thread()
@@ -149,6 +150,7 @@ class Mouth:
                     clean = re.sub(r"[*_#`>]", "", text or "").strip()
                     if clean:
                         print(f"JARVIS: {clean}")
+                        hud.emit("say", text=clean)
                         self._append(np.frombuffer(self._synth(clean), dtype=np.int16))
                         if self.first_audio_at is None:
                             self.first_audio_at = time.time()

@@ -100,6 +100,105 @@ class ServerTest(unittest.TestCase):
             urllib.request.urlopen(req)
         self.assertEqual(cm.exception.code, 403)
 
+    def post(self, body, headers=None):
+        req = urllib.request.Request(self.url + "/api/answer", data=json.dumps(body).encode(), method="POST",
+                                     headers={"Content-Type": "application/json", **(headers or {})})
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code
+
+    def test_clicked_answer_reaches_the_question(self):
+        qid = hud.ask("Shall I run this command: Start-Process calc?")
+        self.assertIn({"id": qid, "question": "Shall I run this command: Start-Process calc?"},
+                      hud.snapshot("missing.db")["asks"])
+        self.assertEqual(self.post({"id": qid, "yes": True}, {"X-Jarvis": "1"}), 200)
+        self.assertTrue(hud.pending_answer(qid))
+        self.assertEqual(self.post({"id": qid, "yes": False}, {"X-Jarvis": "1"}), 409)  # already answered
+        hud.close_ask(qid, "click", True)
+        self.assertIsNone(hud.pending_answer(qid))
+        self.assertEqual(self.post({"id": qid, "yes": True}, {"X-Jarvis": "1"}), 409)  # closed
+
+    def test_answers_need_the_header_and_a_local_host(self):
+        qid = hud.ask("Delete it?")
+        self.addCleanup(hud.close_ask, qid, "timeout", None)
+        self.assertEqual(self.post({"id": qid, "yes": True}), 403)  # a cross-site form can't add the header
+        self.assertEqual(self.post({"id": qid, "yes": True}, {"X-Jarvis": "1", "Host": "evil.example"}), 403)
+        self.assertEqual(self.post({"id": qid, "yes": "yes"}, {"X-Jarvis": "1"}), 400)
+        self.assertEqual(self.post({"nope": 1}, {"X-Jarvis": "1"}), 400)
+        self.assertIsNone(hud.pending_answer(qid))
+
+    def post_typed(self, body, headers=None):
+        req = urllib.request.Request(self.url + "/api/type", data=json.dumps(body).encode(), method="POST",
+                                     headers={"Content-Type": "application/json", **(headers or {})})
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code
+
+    def test_typed_request_reaches_the_voice_loop(self):
+        while hud.take_typed():  # nothing left over from another test
+            pass
+        self.assertEqual(self.post_typed({"text": "  what's   the time  "}, {"X-Jarvis": "1"}), 200)
+        self.assertTrue(hud.has_typed())
+        self.assertEqual(hud.take_typed(), "what's the time")
+        self.assertIsNone(hud.take_typed())
+        self.assertFalse(hud.has_typed())
+
+    def test_typed_requests_need_the_header_and_text(self):
+        self.assertEqual(self.post_typed({"text": "delete everything"}), 403)  # no other page can give orders
+        self.assertEqual(self.post_typed({"text": "hi"}, {"X-Jarvis": "1", "Host": "evil.example"}), 403)
+        self.assertEqual(self.post_typed({"text": "   "}, {"X-Jarvis": "1"}), 400)
+        self.assertEqual(self.post_typed({"text": 5}, {"X-Jarvis": "1"}), 400)
+        self.assertEqual(self.post_typed({}, {"X-Jarvis": "1"}), 400)
+        self.assertFalse(hud.has_typed())
+
+    def test_long_typed_request_is_cut(self):
+        hud.type_request("a" * (hud.TYPED_MAX + 50))
+        self.assertEqual(len(hud.take_typed()), hud.TYPED_MAX)
+
+
+    def get_camera(self, headers=None, query="?w=200"):
+        req = urllib.request.Request(self.url + "/api/camera.png" + query, headers=headers or {})
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, b""
+
+    def test_camera_frames(self):
+        self.addCleanup(hud.set_camera, None)
+        hud.set_camera(None)
+        self.assertEqual(self.get_camera({"X-Jarvis": "1"})[0], 204)  # no camera
+        widths = []
+        hud.set_camera(lambda w: widths.append(w) or b"\x89PNG fake")
+        self.assertEqual(self.get_camera({"X-Jarvis": "1"}), (200, b"\x89PNG fake"))
+        self.assertEqual(widths, [200])
+        self.assertEqual(self.get_camera(), (403, b""))  # another page can't show your camera
+        self.assertEqual(self.get_camera({"X-Jarvis": "1", "Host": "evil.example"})[0], 403)
+        self.assertEqual(self.get_camera({"X-Jarvis": "1"}, "?w=wide")[0], 400)
+
+    def test_pov_event(self):
+        start = hud._events[-1]["id"] if hud._events else 0
+        hud.pov(True)
+        self.assertEqual([(e["kind"], e["on"]) for e in hud.since(start, 0)], [("pov", True)])
+
+
+class AskTest(unittest.TestCase):
+    def test_ask_answer_close_events(self):
+        start = hud._events[-1]["id"] if hud._events else 0
+        qid = hud.ask("Send it?")
+        self.assertIsNone(hud.pending_answer(qid))
+        self.assertTrue(hud.answer(qid, False))
+        self.assertFalse(hud.answer(qid, True))  # first answer wins
+        self.assertIs(hud.pending_answer(qid), False)
+        hud.close_ask(qid, "click", False)
+        kinds = [(e["kind"], e.get("ask")) for e in hud.since(start, 0)]
+        self.assertEqual(kinds, [("ask", qid), ("answered", qid)])
+        self.assertFalse(hud.answer(999999, True))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -250,6 +250,7 @@ class Brain:
             print(f"  [tool] {name}({args})")
             hud.node("tools", name)
             if ack := _SLOW.get(name):  # said while the tool runs, so the wait isn't silent
+                hud.emit("ack", text=ack.format(title=config.USER_TITLE))
                 yield "ack", ack.format(title=config.USER_TITLE)
             called.add(name)
             before = set(self.tools.plugins)

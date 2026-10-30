@@ -180,6 +180,82 @@ class NameTest(unittest.TestCase):
             self.assertIsNone(ears.without_name(text), text)
 
 
+
+class PovCommandTest(unittest.TestCase):
+    def test_show_what_you_see(self):
+        from jarvis import pov_command
+        for said in ["Show what you are seeing.", "show me what you're seeing", "Jarvis, what do you see?",
+                     "what are you looking at right now", "what can you see", "can you show me your POV please",
+                     "show camera", "show me your point of view", "let me see through your eyes", "your pov",
+                     "open the camera view", "give me your perspective", "what you show me"]:
+            self.assertIs(pov_command(said), True, said)
+
+    def test_close_it(self):
+        from jarvis import pov_command
+        for said in ["close the view", "Stop showing me.", "hide your POV", "close the camera feed",
+                     "stop showing me what you see", "Jarvis, close the preview please"]:
+            self.assertIs(pov_command(said), False, said)
+
+    def test_other_things_are_left_alone(self):
+        from jarvis import eyes_command, pov_command
+        for said in ["open camera", "close the camera", "show me the weather", "what do you think",
+                     "turn off the lights", "camera on", "view my calendar"]:
+            self.assertIsNone(pov_command(said), said)
+        self.assertIsNone(eyes_command("show me what you're seeing"))  # not mistaken for "camera on"
+
+    def test_switch(self):
+        from unittest import mock
+
+        import jarvis
+        self.assertIn("CAMERA_ENABLED", jarvis.pov_switch(None, True))
+        eyes = mock.Mock(**{"show_view.return_value": True})
+        with mock.patch("jarvis.hud.pov") as pov:
+            self.assertIn("just for this", jarvis.pov_switch(eyes, True))
+            pov.assert_called_with(True)
+            jarvis.pov_switch(eyes, False)
+            pov.assert_called_with(False)
+
+
+class Point:
+    def __init__(self, x, y):
+        self.x, self.y = x, y
+
+
+class ViewTest(unittest.TestCase):
+    def test_annotate_draws_boxes_and_labels(self):
+        import numpy as np
+
+        from eyes import annotate
+        frame = np.zeros((360, 640, 3), np.uint8)
+        face = [Point(.4 + .2 * (i % 10) / 10, .2 + .4 * (i // 10) / 48) for i in range(478)]
+        hand = [Point(.75 + .1 * (i % 5) / 5, .5 + .3 * (i // 5) / 5) for i in range(21)]
+        annotate(frame, [face], [(hand, "Thumb_Up", .93)], Sight(1, 1, True, True, "Thumb_Up"), 11.6)
+        self.assertTrue(frame[int(.2 * 360) - 2:int(.62 * 360), int(.4 * 640) - 2:int(.62 * 640)].any())  # face
+        self.assertTrue(frame[int(.5 * 360):int(.82 * 360), int(.75 * 640):int(.87 * 640)].any())  # hand
+        self.assertTrue(frame[340:, :200].any())  # status line
+        self.assertFalse(frame[150:250, :150].any())  # nothing drawn where nothing was seen
+
+    def test_view_png_and_view_only_camera(self):
+        import numpy as np
+
+        e = fake_eyes(Sight(time.time(), 1, True))
+        e._watching, e._view, e._view_at, e._view_only = __import__("threading").Event(), None, 0.0, False
+        self.assertTrue(e.show_view())  # the camera was closed: opened just for the view
+        self.assertTrue(e._view_only and e.watching)
+        self.assertIsNone(e.view_png())  # no frame drawn yet
+        e._view = np.full((360, 640, 3), 80, np.uint8)
+        png = e.view_png(320)
+        self.assertTrue(png.startswith(b"\x89PNG"))
+        import cv2
+        self.assertEqual(cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR).shape, (180, 320, 3))
+        e.resume()  # "camera on" keeps it open after the view closes
+        self.assertFalse(e._view_only)
+        self.assertFalse(e.show_view())  # already open
+        e._sight = Sight(time.time() - 10)  # camera stalled
+        self.assertIsNone(e.view_png())
+
+
+
 if __name__ == "__main__":
     unittest.main()
 

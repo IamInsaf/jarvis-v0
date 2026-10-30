@@ -14,6 +14,7 @@ import time
 from collections import deque
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 
 import config
 
@@ -26,6 +27,11 @@ _next_id = 1
 _state = "idle"
 _levels = {"mic": (0.0, 0.0), "voice": (0.0, 0.0)}  # source -> (0..1, when)
 _info = {"started": time.time(), "mode": None, "camera": None, "first_audio": None}
+_asks: dict[int, dict] = {}  # yes/no questions JARVIS is waiting on: id -> {"question", "answer": None/True/False}
+_next_ask = 1
+_typed: deque = deque(maxlen=20)  # requests typed into the orb's chat bar, waiting for the voice loop
+TYPED_MAX = 1000                  # characters in one typed request
+_camera = None                    # eyes.view_png while the camera is in use: width -> PNG bytes or None
 _server = None
 
 
@@ -34,7 +40,7 @@ _server = None
 def emit(kind: str, **data):
     global _next_id
     with _cond:
-        _events.append({"id": _next_id, "t": time.time(), "kind": kind, **data})
+        _events.append({**data, "id": _next_id, "t": time.time(), "kind": kind})  # data can never overwrite these
         _next_id += 1
         _cond.notify_all()
 
@@ -49,6 +55,76 @@ def state(name: str):
 
 def current() -> str:
     return _state
+
+
+def ask(question: str) -> int:
+    """JARVIS asked a yes/no question out loud: the page and the orb show it with YES / NO buttons too.
+    Returns its id for pending_answer() and close_ask()."""
+    global _next_ask
+    with _cond:
+        qid, _next_ask = _next_ask, _next_ask + 1
+        _asks[qid] = {"question": question, "answer": None}
+    emit("ask", ask=qid, question=question)  # not id=: that is the event's own number
+    return qid
+
+
+def answer(qid: int, yes: bool) -> bool:
+    """A click on YES or NO. False if that question isn't open (already answered, or never asked)."""
+    with _cond:
+        q = _asks.get(qid)
+        if q is None or q["answer"] is not None:
+            return False
+        q["answer"] = bool(yes)
+        _cond.notify_all()
+    return True
+
+
+def pending_answer(qid: int) -> bool | None:
+    """The clicked answer to an open question, or None if nobody has clicked."""
+    with _cond:
+        q = _asks.get(qid)
+        return None if q is None else q["answer"]
+
+
+def close_ask(qid: int, how: str, yes: bool | None):
+    """The question is settled ("voice", "click" or "timeout"): the buttons go away."""
+    with _cond:
+        _asks.pop(qid, None)
+    emit("answered", ask=qid, how=how, yes=yes)
+
+
+def type_request(text: str) -> bool:
+    """A request typed into the orb's chat bar: the voice loop takes it like something said after
+    "hey Jarvis". False if it's empty."""
+    text = " ".join(text.split())[:TYPED_MAX]
+    if not text:
+        return False
+    with _cond:
+        _typed.append(text)
+        _cond.notify_all()
+    emit("typed", text=text)
+    return True
+
+
+def has_typed() -> bool:
+    return bool(_typed)
+
+
+def take_typed() -> str | None:
+    """The oldest typed request not handled yet, or None."""
+    with _cond:
+        return _typed.popleft() if _typed else None
+
+
+def set_camera(view_png):
+    """Where /api/camera.png gets its frames: eyes.view_png, or None for no camera."""
+    global _camera
+    _camera = view_png
+
+
+def pov(on: bool):
+    """Open (or close) the small view of what the camera sees, beside the orb."""
+    emit("pov", on=on)
 
 
 def node(name: str, label: str = ""):
@@ -120,6 +196,8 @@ def snapshot(db_path: str | None = None) -> dict:
     data["system"] = {"model": config.OLLAMA_MODEL if brains.awake else "off", "think": config.OLLAMA_THINK,
                       "ollama": _ollama_up(), "cpu": _cpu(), "ram": _ram(), "state": _state, **_info}
     data["categories"] = _categories()
+    with _cond:
+        data["asks"] = [{"id": i, "question": q["question"]} for i, q in _asks.items() if q["answer"] is None]
     return data
 
 
@@ -192,18 +270,55 @@ class Handler(BaseHTTPRequestHandler):
     def _send(self, code, body, ctype="application/json"):
         data = body.encode() if isinstance(body, str) else body
         self.send_response(code)
-        self.send_header("Content-Type", f"{ctype}; charset=utf-8")
+        self.send_header("Content-Type", ctype if ctype.startswith("image/") else f"{ctype}; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
 
-    def do_GET(self):
+    def _local(self) -> bool:
         # transcripts are private: a web page that points its own domain at 127.0.0.1 (DNS rebinding)
         # mustn't be able to read them, so only requests addressed to this machine by name are served
         host = (self.headers.get("Host") or "").rsplit(":", 1)[0]
-        if host not in ("127.0.0.1", "localhost", "[::1]"):
+        return host in ("127.0.0.1", "localhost", "[::1]")
+
+    def do_POST(self):
+        # an answer approves real actions and a typed request can start them, so besides the Host check
+        # these need a header that a form or a simple cross-site request can't send: no other web page
+        # can click YES or give orders for you
+        if not self._local() or self.headers.get("X-Jarvis") != "1":
             return self._send(403, '{"error": "local only"}')
+        if self.path == "/api/type":
+            return self._post_typed()
+        if self.path != "/api/answer":
+            return self._send(404, '{"error": "not found"}')
+        try:
+            size = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(min(size, 1024)) or b"{}")
+            qid, yes = int(body["id"]), body["yes"]
+        except (ValueError, KeyError, TypeError):
+            return self._send(400, '{"error": "expected {\\"id\\": n, \\"yes\\": true|false}"}')
+        if not isinstance(yes, bool):
+            return self._send(400, '{"error": "yes must be true or false"}')
+        ok = answer(qid, yes)
+        self._send(200 if ok else 409, json.dumps({"ok": ok}))
+
+    def _post_typed(self):
+        try:
+            size = int(self.headers.get("Content-Length") or 0)
+            text = json.loads(self.rfile.read(min(size, 4 * TYPED_MAX)) or b"{}")["text"]
+        except (ValueError, KeyError, TypeError):
+            return self._send(400, '{"error": "expected {\\"text\\": \\"...\\"}"}')
+        if not isinstance(text, str) or not type_request(text):
+            return self._send(400, '{"error": "text must be a non-empty string"}')
+        self._send(200, '{"ok": true}')
+
+    def do_GET(self):
+        if not self._local():
+            return self._send(403, '{"error": "local only"}')
+        url = urlsplit(self.path)
+        if url.path == "/api/camera.png":
+            return self._camera_frame(parse_qs(url.query))
         if self.path == "/":
             self._send(200, PAGE, "text/html")
         elif self.path == "/api/snapshot":
@@ -212,6 +327,20 @@ class Handler(BaseHTTPRequestHandler):
             self._stream()
         else:
             self._send(404, '{"error": "not found"}')
+
+    def _camera_frame(self, query: dict):
+        # the live camera: like an answer, only for a client that can send the header (the orb), so another
+        # web page can't even put it in an <img> on your screen
+        if self.headers.get("X-Jarvis") != "1":
+            return self._send(403, '{"error": "local only"}')
+        try:
+            width = int(query.get("w", ["400"])[0])
+        except ValueError:
+            return self._send(400, '{"error": "w must be a number"}')
+        png = _camera(width) if _camera else None
+        if png is None:  # no camera, or it's still starting
+            return self._send(204, b"")
+        self._send(200, png, "image/png")
 
     def _stream(self):
         self.send_response(200)
@@ -347,6 +476,22 @@ header { grid-column:1 / -1; display:flex; align-items:center; justify-content:s
 .line.assistant small { color:var(--cyan); }
 .line.assistant span { color:#e9fbff; }
 .tag { font:10px/1.6 var(--mono); letter-spacing:.12em; color:var(--amber); padding:2px 0; }
+.tag.bad { color:var(--red); } .tag.good { color:var(--green); } .tag.soft { color:var(--muted); }
+.line.live span::after { content:"▍"; color:var(--cyan); animation:blink 1s steps(1) infinite; margin-left:2px; }
+@keyframes blink { 50% { opacity:0; } }
+#ask { margin:12px auto 0; max-width:520px; width:100%; padding:12px 14px; border:1px solid var(--amber);
+       background:linear-gradient(180deg, rgba(60,40,8,.55), rgba(26,16,3,.45)); text-align:center;
+       box-shadow:0 0 18px rgba(255,181,71,.25); animation:askglow 1.6s ease-in-out infinite; }
+#ask[hidden] { display:none; }
+#ask small { display:block; font:10px/1 var(--mono); letter-spacing:.28em; color:var(--amber); margin-bottom:8px; }
+#ask p { margin:0 0 10px; font:13px/1.45 var(--mono); color:#fff3dc; overflow-wrap:anywhere; }
+#ask button { font:600 12px/1 var(--mono); letter-spacing:.24em; padding:9px 22px; margin:0 6px; cursor:pointer;
+              background:transparent; color:var(--text); border:1px solid var(--line2); }
+#ask button.yes { border-color:var(--green); color:var(--green); }
+#ask button.no { border-color:var(--red); color:var(--red); }
+#ask button:hover, #ask button:focus-visible { background:rgba(255,255,255,.08); outline:none; }
+#ask button:disabled { opacity:.4; cursor:default; }
+@keyframes askglow { 50% { box-shadow:0 0 30px rgba(255,181,71,.45); } }
 /* pipeline */
 .edge { stroke:rgba(42,212,255,.16); stroke-width:1; fill:none; }
 .n circle.core { fill:#03121d; stroke:var(--cyan); stroke-width:1.5; }
@@ -371,7 +516,7 @@ header { grid-column:1 / -1; display:flex; align-items:center; justify-content:s
   .panel { max-height:420px; }
   .brand span { display:none; }
 }
-@media (prefers-reduced-motion: reduce) { .n.hit circle.halo { animation:none; } }
+@media (prefers-reduced-motion: reduce) { .n.hit circle.halo, #ask, .line.live span::after { animation:none; } }
 </style></head>
 <body>
 <canvas id="field"></canvas><div class="scan"></div>
@@ -402,6 +547,8 @@ header { grid-column:1 / -1; display:flex; align-items:center; justify-content:s
   <div id="core">
     <div id="orbwrap"><canvas id="orb"></canvas></div>
     <div id="status"><b id="statelbl">OFFLINE</b><small id="statesub">Connecting to JARVIS…</small></div>
+    <div id="ask" hidden role="alertdialog" aria-labelledby="askq"><small>AWAITING YOUR APPROVAL</small>
+      <p id="askq"></p><button class="yes" id="askyes">YES</button><button class="no" id="askno">NO</button></div>
     <div id="pipe"><svg viewBox="0 0 1000 300" preserveAspectRatio="xMidYMid meet" aria-label="Request pipeline">
       <g id="edges"></g><g id="trails"></g><g id="nodes"></g><g id="pulses"></g></svg></div>
   </div>
@@ -660,6 +807,8 @@ function renderSnap(d) {
   renderTimers();
   buildGraph(d.categories);
   if (!$("#lines").children.length) d.transcript.forEach(m => addLine(m.role, m.text, m.ts, false));
+  if (d.asks && d.asks.length) { if (askId == null) showAsk(d.asks[0].id, d.asks[0].question); }
+  else if (askId != null) hideAsk();
 }
 
 function renderTimers() {
@@ -672,7 +821,7 @@ function renderTimers() {
   }).join("") : "";
 }
 
-function addLine(role, text, ts, type = true) {
+function addLine(role, text, ts, type = true) {  // returns the line's text span
   const box = $("#lines"), div = document.createElement("div");
   div.className = "line " + role;
   const who = role === "user" ? "YOU" : role === "assistant" ? "JARVIS" : "";
@@ -687,11 +836,45 @@ function addLine(role, text, ts, type = true) {
     tick();
   } else span.textContent = text;
   box.scrollTop = box.scrollHeight;
+  return span;
 }
-function addTag(text) {
+function addTag(text, kind = "") {
   const box = $("#lines"), div = document.createElement("div");
-  div.className = "tag"; div.textContent = text; box.appendChild(div); box.scrollTop = box.scrollHeight;
+  div.className = "tag " + kind; div.textContent = text; box.appendChild(div); box.scrollTop = box.scrollHeight;
 }
+
+// a reply spoken clause by clause: one transcript line that grows as JARVIS talks
+let live = null, pendingAck = null, askId = null;
+function liveSay(text) {
+  if (pendingAck && text === pendingAck) { pendingAck = null; return; }  // already shown as a tag
+  if (!live) { live = addLine("assistant", "", null, false); live.parentNode.classList.add("live"); }
+  live.textContent += (live.textContent ? " " : "") + text;
+  $("#statesub").textContent = text;
+  $("#lines").scrollTop = $("#lines").scrollHeight;
+}
+function endLive(text) {
+  if (!live) return false;
+  if (text) live.textContent = text;
+  live.parentNode.classList.remove("live"); live = null;
+  return true;
+}
+function showAsk(id, question) {
+  askId = id; $("#askq").textContent = question; $("#ask").hidden = false;
+  $("#askyes").disabled = $("#askno").disabled = false;
+}
+function hideAsk(id) { if (id == null || id === askId) { askId = null; $("#ask").hidden = true; } }
+async function answerAsk(yes) {
+  if (askId == null) return;
+  $("#askyes").disabled = $("#askno").disabled = true;
+  try {
+    await fetch("/api/answer", {method:"POST", headers:{"Content-Type":"application/json", "X-Jarvis":"1"},
+                                body:JSON.stringify({id:askId, yes})});
+  } catch { $("#askyes").disabled = $("#askno").disabled = false; }
+}
+$("#askyes").onclick = () => answerAsk(true);
+$("#askno").onclick = () => answerAsk(false);
+const GATE = {blocked:["⛔ BLOCKED ", "bad"], confirm:["? CONFIRM ", ""], approved:["✓ APPROVED ", "good"],
+              declined:["✗ DECLINED ", "bad"]};
 
 // --- live data ---
 let refreshTimer = null;
@@ -716,8 +899,16 @@ function connect() {
       if (e.node === "tools" && e.label) { $("#statesub").textContent = "running " + e.label; addTag("⚙ TOOL   " + e.label); refreshSoon(); }
       if (e.node === "rules" && e.label) addTag("⚡ RULE   " + e.label);
     }
-    else if (e.kind === "heard") { addLine("user", e.text, e.t); $("#statesub").textContent = "“" + e.text + "”"; }
-    else if (e.kind === "reply") { addLine("assistant", e.text, e.t); $("#statesub").textContent = ""; refreshSoon(); }
+    else if (e.kind === "heard") { endLive(); addLine("user", e.text, e.t); $("#statesub").textContent = "“" + e.text + "”"; }
+    else if (e.kind === "say") liveSay(e.text);
+    else if (e.kind === "ack") { pendingAck = e.text; addTag("… " + e.text, "soft"); }
+    else if (e.kind === "reply") { if (!endLive(e.text)) addLine("assistant", e.text, e.t); $("#statesub").textContent = ""; refreshSoon(); }
+    else if (e.kind === "barge") { endLive(); addTag(e.how === "stop" ? "✋ TOLD TO STOP" : "✋ INTERRUPTED (" + e.how + ")", "soft"); }
+    else if (e.kind === "gate") { const [label, kind] = GATE[e.tier] || ["", ""];
+                                   addTag(label + e.tool + (e.tier === "blocked" && e.why ? " · " + e.why : ""), kind); }
+    else if (e.kind === "ask") showAsk(e.ask, e.question);
+    else if (e.kind === "answered") { hideAsk(e.ask); endLive();
+      if (e.how === "click") addTag((e.yes ? "✓ YES" : "✗ NO") + " (clicked)", e.yes ? "good" : "bad"); }
     else if (e.kind === "error") { addTag("✖ " + e.text); }
     else if (e.kind === "brain") { addTag("⇄ " + e.model); refreshSoon(); }
     else if (e.kind === "info") refreshSoon();
@@ -747,14 +938,95 @@ setInterval(() => {
   if (snap) { $("#uptime").textContent = "UP " + hms(nowS() - snap.system.started); renderTimers(); }
 }, 1000);
 setInterval(() => { if (document.visibilityState === "visible") load(); }, 10000);
-buildGraph(["time","timer","memory","web","files","websites","tasks","messages","apps","skills","chat","abilities"]);
+buildGraph(["time","timer","memory","web","files","websites","tasks","messages","apps","computer","devices","brain",
+            "skills","chat","abilities"]);
 connect(); load(); requestAnimationFrame(frame);
 </script></body></html>"""
 
 
+def demo():
+    """A scripted conversation through the real reporting calls, over and over: for working on the HUD and the
+    orb without a microphone, or for showing them off. Nothing is actually run."""
+    import math
+
+    def talk(seconds, source="voice"):
+        end = time.time() + seconds
+        while time.time() < end:
+            level(source, .35 + .3 * abs(math.sin(time.time() * 9)) + .15 * math.sin(time.time() * 23))
+            time.sleep(.05)
+
+    def say(*clauses):
+        state("speaking")
+        for c in clauses:
+            emit("say", text=c)
+            talk(.25 + len(c) / 28)
+        emit("reply", text=" ".join(clauses))
+        state("idle")
+
+    while True:
+        state("idle")
+        time.sleep(2.5)
+        state("listening")
+        talk(1.6, "mic")
+        emit("heard", text="Clear out my documents folder with PowerShell", speaker="insaf")
+        state("thinking")
+        for n, lbl in (("ears", "voice"), ("voice", "insaf"), ("router", "computer"), ("cat:computer", ""),
+                       ("memory", "2 facts"), ("tools", "run_shell")):
+            node(n, lbl)
+            time.sleep(.35)
+        emit("gate", tool="run_shell", tier="blocked", why="deleting folders recursively")
+        say("I won't do that, sir.", "Deleting your documents folder isn't something I'll run, even when asked.")
+        time.sleep(2)
+        emit("heard", text="Then make a backup folder on the desktop", speaker="insaf")
+        state("thinking")
+        node("router", "computer")
+        node("tools", "run_shell")
+        why = "Shall I run this command: New-Item -ItemType Directory ~\\Desktop\\Backup?"
+        emit("gate", tool="run_shell", tier="confirm", why=why)
+        qid = ask(why)
+        state("speaking")
+        emit("say", text=why)
+        talk(2.4)
+        state("listening")
+        end = time.time() + 12  # time to click YES or NO on the page or the orb
+        while time.time() < end and pending_answer(qid) is None:
+            time.sleep(.1)
+        yes = pending_answer(qid)
+        close_ask(qid, "click" if yes is not None else "timeout", yes)
+        emit("gate", tool="run_shell", tier="approved" if yes else "declined", why="")
+        if yes:
+            say("Done, sir.", "There's a Backup folder on your desktop now.", "Anything else?")
+        else:
+            say("Very well, sir. I've left it alone.")
+        time.sleep(1.5)
+        emit("heard", text="What's the weather going to be like this weekend?", speaker="insaf")
+        state("thinking")
+        node("router", "web")
+        node("tools", "web_search")
+        emit("ack", text="One moment, sir.")
+        time.sleep(1.2)
+        state("speaking")
+        for c in ("Saturday looks dry and mild, around nineteen degrees,", "with rain arriving on Sunday"):
+            emit("say", text=c)
+            talk(1.5)
+        emit("barge", how="voice")
+        emit("reply", text="Saturday looks dry and mild, around nineteen degrees, with rain arriving on Sunday")
+        state("listening")
+        talk(1.0, "mic")
+        emit("heard", text="Stop", speaker="insaf")
+        emit("barge", how="stop")
+        state("idle")
+        time.sleep(4)
+
+
 if __name__ == "__main__":
     # standalone: shows tasks, timers and stats from the database, but nothing live (JARVIS isn't in this process)
-    print(f"JARVIS HUD: {start()}  (Ctrl-C to stop; run jarvis.py instead for the live view)")
+    url = start()
+    if "--demo" in sys.argv:
+        print(f"JARVIS HUD demo: {url}  (a scripted conversation on a loop; Ctrl-C to stop)")
+        threading.Thread(target=demo, daemon=True, name="demo").start()
+    else:
+        print(f"JARVIS HUD: {url}  (Ctrl-C to stop; run jarvis.py instead for the live view)")
     try:
         while True:
             time.sleep(3600)

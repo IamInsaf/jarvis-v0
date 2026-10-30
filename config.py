@@ -30,7 +30,11 @@ BRAIN_IDLE_MINUTES = float(os.getenv("BRAIN_IDLE_MINUTES", "10"))
 # --- Ears ---
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small.en")   # tiny.en / base.en / small.en / medium.en
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "auto")     # auto / cpu / cuda
-WAKE_THRESHOLD = float(os.getenv("WAKE_THRESHOLD", "0.5"))
+WAKE_THRESHOLD = float(os.getenv("WAKE_THRESHOLD", "0.5"))   # lower it (debug_wake.py suggests a value) if it misses you
+# trained on your own "hey Jarvis" by enroll_wake.py; used only if the file exists, empty = never
+WAKE_VERIFIER = os.getenv("WAKE_VERIFIER", "data/wake_verifier.pkl")
+# with the verifier, hits from this score up are checked against your voice (and WAKE_THRESHOLD applies to that)
+WAKE_VERIFIER_THRESHOLD = float(os.getenv("WAKE_VERIFIER_THRESHOLD", "0.2"))
 VOICEPRINT_DIR = os.getenv("VOICEPRINT_DIR", "data/voiceprints")  # enrolled speaker voiceprints
 VOICE_ID_THRESHOLD = float(os.getenv("VOICE_ID_THRESHOLD", "0.75"))  # cosine similarity to match a speaker
 # short phrases score lower: keep a speaker recognized in the last few minutes down to this score
@@ -101,6 +105,11 @@ CLAUDE_BUILD_TIMEOUT = float(os.getenv("CLAUDE_BUILD_TIMEOUT", "1800"))  # secon
 # --- HUD (hud.py): live dashboard at http://127.0.0.1:HUD_PORT while JARVIS runs ---
 HUD_ENABLED = os.getenv("HUD_ENABLED", "true").lower() == "true"
 HUD_PORT = int(os.getenv("HUD_PORT", "8766"))
+# --- orb (orb.py): a small always-on-top orb on the desktop with captions and YES/NO buttons (needs the HUD) ---
+ORB_ENABLED = os.getenv("ORB_ENABLED", "true").lower() == "true"
+ORB_SIZE = int(os.getenv("ORB_SIZE", "120"))                      # pixels, at 100% display scaling
+ORB_CAPTIONS = os.getenv("ORB_CAPTIONS", "true").lower() == "true"  # what's said and heard, beside the orb
+ORB_IDLE = os.getenv("ORB_IDLE", "dim")                             # when quiet: dim, hide or show
 
 # --- Personality ---
 USER_TITLE = os.getenv("USER_TITLE", "sir")

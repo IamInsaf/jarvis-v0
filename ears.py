@@ -1,5 +1,6 @@
 """Ears: always-on wake word + record until silence + local Whisper transcription.
 Nothing here touches the internet (models download once on first run)."""
+import os
 import queue
 import re
 import threading
@@ -28,7 +29,8 @@ NAME = re.compile(r"^\W*(?:(?:hey|hi|ok(?:ay)?|yo)\W+)?(?:jarvis|jarvas|javis|je
 
 class Heard(NamedTuple):
     """Why JARVIS is listening: "wake" (hey Jarvis: say "Yes, sir?" then listen), "name" (facing the
-    camera, said "Jarvis ..."), or "gesture" (facing the camera, holding a hand sign). For name and
+    camera, said "Jarvis ..."), "gesture" (facing the camera, holding a hand sign), or "typed" (a request
+    was typed into the orb's chat bar instead: take it from hud.take_typed()). For name and
     gesture, text is what was already said (without the name); "" means nothing came after the name."""
     how: str
     gesture: str | None = None
@@ -90,10 +92,23 @@ class BargeIn:
         return self.run * FRAME / RATE * 1000 >= config.BARGE_IN_MS
 
 
+def load_wake_model() -> Model:
+    """The "hey Jarvis" detector, plus the verifier trained on your voice by enroll_wake.py if there is
+    one: it double-checks every hit scoring WAKE_VERIFIER_THRESHOLD or more, so a "hey Jarvis" in an
+    accent the stock model is unsure about still gets through while other voices don't."""
+    openwakeword.utils.download_models(["hey_jarvis"])
+    if config.WAKE_VERIFIER and os.path.exists(config.WAKE_VERIFIER):
+        print(f"  [ears] wake word: verifier on ({config.WAKE_VERIFIER})")
+        return Model(wakeword_models=["hey_jarvis"], inference_framework="onnx",
+                     custom_verifier_models={"hey_jarvis": config.WAKE_VERIFIER},
+                     custom_verifier_threshold=config.WAKE_VERIFIER_THRESHOLD)
+    print("  [ears] wake word: stock model (run enroll_wake.py if it misses you)")
+    return Model(wakeword_models=["hey_jarvis"], inference_framework="onnx")
+
+
 class Ears:
     def __init__(self):
-        openwakeword.utils.download_models(["hey_jarvis"])
-        self.wake = Model(wakeword_models=["hey_jarvis"], inference_framework="onnx")
+        self.wake = load_wake_model()
         self.stt = WhisperModel(config.WHISPER_MODEL, device=config.WHISPER_DEVICE, compute_type="int8")
         self.stt_lock = threading.Lock()  # the type mode hotkey transcribes on its own thread
         self.vad = SpeechDetector()  # when someone is talking, as opposed to just noise
@@ -137,10 +152,11 @@ class Ears:
             if max(scores.values()) >= config.WAKE_THRESHOLD:
                 return
 
-    def wait_for_attention(self, eyes=None) -> Heard:
+    def wait_for_attention(self, eyes=None, typed=None) -> Heard:
         """Wait until someone wants JARVIS: "hey Jarvis" anywhere, or, facing the camera with the mouth
         moving, speech that starts with "Jarvis" or comes with a hand sign. Facing the camera and
-        talking with neither (a phone call, someone in the room) is ignored without a sound."""
+        talking with neither (a phone call, someone in the room) is ignored without a sound.
+        `typed()`, checked every frame, ends the wait with Heard("typed") when it's true."""
         on_camera = eyes is not None and (config.GESTURE_TO_TALK or config.NAME_ON_CAMERA)
         hud.state("idle")
         while True:
@@ -149,6 +165,8 @@ class Ears:
             loud, how, gesture = 0, None, None
             while how is None:
                 frame = self.q.get()
+                if typed is not None and typed():
+                    return Heard("typed")
                 preroll.append(frame)
                 scores = self.wake.predict(frame)
                 if max(scores.values()) >= config.WAKE_THRESHOLD:
@@ -223,8 +241,9 @@ class Ears:
         finally:
             hud.state("idle" if before == "listening" else before)
 
-    def _record(self, wait: float, frames: list | None = None):
-        """Record until silence. `frames` is audio already heard (pre-roll), which counts as started."""
+    def _record(self, wait: float, frames: list | None = None, stop=None):
+        """Record until silence. `frames` is audio already heard (pre-roll), which counts as started.
+        `stop()`, checked every frame, gives up early with None (a YES clicked on the HUD instead)."""
         frames = frames or []
         silent, started = 0.0, bool(frames)
         t0, frame_sec = time.time(), FRAME / RATE
@@ -233,6 +252,8 @@ class Ears:
             self.vad.probability(frame)
         while True:
             frame = self.q.get()
+            if stop is not None and stop():
+                return None
             frames.append(frame)
             if self.vad.is_speech(frame):
                 started, silent = True, 0.0
@@ -247,7 +268,7 @@ class Ears:
                 break
         return np.concatenate(frames)
 
-    def listen(self, wait: float = 5, flush: bool = True) -> tuple[str, np.ndarray | None]:
+    def listen(self, wait: float = 5, flush: bool = True, stop=None) -> tuple[str, np.ndarray | None]:
         """Record one utterance and return (text, audio). text is '' and audio is
         None if nothing was said within `wait` seconds. audio is float32 at 16kHz, suitable for voice ID.
         flush=False keeps audio heard since the last call (dictation: you keep talking while it transcribes)."""
@@ -256,7 +277,7 @@ class Ears:
         before = hud.current()  # a yes/no asked mid-request goes back to "thinking" afterwards
         hud.state("listening")
         try:
-            return self._finish_thought(*self._transcribe(self._record(wait)))
+            return self._finish_thought(*self._transcribe(self._record(wait, stop=stop)))
         finally:
             hud.state("idle" if before == "listening" else before)
 

@@ -60,6 +60,17 @@ class SileroTest(unittest.TestCase):
         self.assertLess(seconds, speech_end + config.SILENCE_SECONDS + 0.5)  # stopped soon after
 
 
+class StopEarlyTest(unittest.TestCase):
+    def test_stop_ends_the_recording(self):
+        e = ears.Ears.__new__(ears.Ears)
+        e.q, e.vad = queue.Queue(), vad.SpeechDetector(loudness_only=True)
+        for _ in range(50):
+            e.q.put(np.zeros(ears.FRAME, dtype=np.int16))
+        calls = []
+        self.assertIsNone(e._record(wait=30, stop=lambda: calls.append(1) or len(calls) > 3))
+        self.assertEqual(len(calls), 4)  # gave up at once, didn't wait out the 30 seconds
+
+
 class LoudnessFallbackTest(unittest.TestCase):
     def test_loudness_only(self):
         d = vad.SpeechDetector(loudness_only=True)

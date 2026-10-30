@@ -1,7 +1,9 @@
 """Eyes: a background thread that watches the webcam and reports what it sees — whether you're
 facing the screen, whether your mouth is moving, and which hand sign you're holding. It never
 touches the mic or the brain; the main loop reads `sight()` where it already makes decisions.
-Frames stay in memory and are never saved. Without a camera (or MediaPipe) it reports nobody there,
+Frames stay in memory and are never saved; while someone is looking through JARVIS's eyes (the POV view, see
+show_view) the latest one is also drawn on, with boxes round the faces and hands it's tracking, and handed to
+the HUD to show. Without a camera (or MediaPipe) it reports nobody there,
 and JARVIS works on the wake word alone."""
 import math
 import os
@@ -24,6 +26,12 @@ PALM = "Open_Palm"  # stop / be quiet, never a way to start talking
 IDLE_AFTER = 30     # seconds with no face before dropping to IDLE_FPS
 IDLE_FPS = 2
 STALE = 1.0         # a sight older than this (camera stalled or paused) counts as nobody there
+VIEWER_GONE = 2.0   # seconds without a POV frame being asked for before drawing them stops
+VIEW_ONLY_GRACE = 8.0  # a camera opened just for the view closes this long after the view stops asking
+# the 21 hand landmarks' bones (MediaPipe's HAND_CONNECTIONS): thumb, four fingers, palm
+HAND_BONES = ((0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8), (5, 9), (9, 10), (10, 11), (11, 12),
+              (9, 13), (13, 14), (14, 15), (15, 16), (13, 17), (17, 18), (18, 19), (19, 20), (0, 17))
+GREEN, AMBER, GREY, CYAN = (136, 255, 0), (71, 181, 255), (170, 170, 170), (255, 212, 42)  # BGR, the HUD's colours
 
 
 @dataclass(frozen=True)
@@ -92,6 +100,59 @@ class GestureFilter:
         return best if best and names.count(best) / len(names) >= self.share else None
 
 
+def _box(points, w: int, h: int, pad: float = 0.04) -> tuple[int, int, int, int]:
+    """Pixel box round normalized landmarks, a little padded and kept inside the frame."""
+    xs, ys = [p.x for p in points], [p.y for p in points]
+    px, py = (max(xs) - min(xs)) * pad + 0.005, (max(ys) - min(ys)) * pad + 0.005
+    return (max(0, int((min(xs) - px) * w)), max(0, int((min(ys) - py) * h)),
+            min(w - 1, int((max(xs) + px) * w)), min(h - 1, int((max(ys) + py) * h)))
+
+
+def annotate(frame, faces: list, hands: list, sight: "Sight", fps: float = 0.0):
+    """Draw what JARVIS is tracking on a BGR frame (in place): a box and a sparse landmark mesh per face (the
+    one it's watching labelled facing / talking), each hand's skeleton and box with the gesture it reads,
+    and a status line. `faces` and `hands` are MediaPipe landmark lists (points with normalized .x .y);
+    `hands` items are (landmarks, gesture name or None, score)."""
+    import cv2
+    h, w = frame.shape[:2]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+
+    def label(text, x, y, colour):
+        y = max(14, y)
+        (tw, th), _ = cv2.getTextSize(text, font, .45, 1)
+        cv2.rectangle(frame, (x, y - th - 6), (x + tw + 6, y), colour, -1)
+        cv2.putText(frame, text, (x + 3, y - 4), font, .45, (0, 0, 0), 1, cv2.LINE_AA)
+
+    for i, face in enumerate(faces):
+        main = i == 0
+        colour = GREEN if main and sight.facing else AMBER if main else GREY
+        x0, y0, x1, y1 = _box(face, w, h)
+        cv2.rectangle(frame, (x0, y0), (x1, y1), colour, 2)
+        for p in face[::6]:  # every 6th of the 478 points: enough to see the mesh follow the face
+            cv2.circle(frame, (int(p.x * w), int(p.y * h)), 1, colour, -1)
+        tags = [f"face {i + 1}"]
+        if main:
+            tags += ["facing" if sight.facing else "looking away"] + (["talking"] if sight.mouth_moving else [])
+        label(" - ".join(tags), x0, y0 - 2, colour)  # OpenCV's fonts are ASCII only
+    for marks, gesture, score in hands:
+        pts = [(int(p.x * w), int(p.y * h)) for p in marks]
+        for a, b in HAND_BONES:
+            if a < len(pts) and b < len(pts):
+                cv2.line(frame, pts[a], pts[b], CYAN, 2, cv2.LINE_AA)
+        for pt in pts:
+            cv2.circle(frame, pt, 3, (255, 255, 255), -1)
+        x0, y0, x1, y1 = _box(marks, w, h, pad=.15)
+        cv2.rectangle(frame, (x0, y0), (x1, y1), CYAN, 1)
+        if gesture and gesture != "None":
+            label(f"{gesture.replace('_', ' ').lower()} {score:.0%}", x0, y0 - 2, CYAN)
+    status = f"faces {sight.faces}   gesture {(sight.gesture or '-').replace('_', ' ').lower()}"
+    if fps:
+        status += f"   {fps:.0f} fps"
+    cv2.putText(frame, status, (8, h - 10), font, .5, (0, 0, 0), 3, cv2.LINE_AA)
+    cv2.putText(frame, status, (8, h - 10), font, .5, (233, 251, 255), 1, cv2.LINE_AA)
+    return frame
+
+
 def head_angles(matrix) -> tuple[float, float]:
     """(yaw, pitch) in degrees from MediaPipe's facial transformation matrix; 0, 0 = facing the camera."""
     r = np.asarray(matrix)[:3, :3]
@@ -107,6 +168,9 @@ class Eyes:
         self._last_mouth = 0.0           # when the mouth was last seen moving
         self._gesture_seen: dict = {}    # stable gesture -> last time it was held
         self._watching = threading.Event()
+        self._view = None          # the last frame drawn for the POV view (BGR), while someone's watching it
+        self._view_at = 0.0        # when the view last asked for a frame
+        self._view_only = False    # the camera was opened just for the view: close it when the view goes
         if watching:  # otherwise the camera stays closed until resume()
             self._watching.set()
         threading.Thread(target=self._run, daemon=True, name="eyes").start()
@@ -144,10 +208,44 @@ class Eyes:
 
     def pause(self):
         """Let go of the camera (LED off, free for Zoom/Teams) until resume()."""
+        self._view_only = False
         self._watching.clear()
 
     def resume(self):
+        self._view_only = False
         self._watching.set()
+
+    # --- the POV view: what the camera sees, with what's being tracked drawn on ---
+
+    def show_view(self) -> bool:
+        """Start drawing frames for the view. Opens the camera if it's closed, just for as long as the view
+        keeps asking for frames; returns True if it had to."""
+        self._view_at = time.time()
+        if self._watching.is_set():
+            return False
+        self._view_only = True
+        self._watching.set()
+        return True
+
+    def view_png(self, width: int = 400) -> bytes | None:
+        """The latest drawn frame as a PNG `width` pixels wide, or None while there's none yet (camera
+        starting) or it's gone stale. Asking keeps the view, and a camera opened for it, alive."""
+        import cv2
+        self._view_at = time.time()
+        if self._view_only and not self._watching.is_set():
+            self._watching.set()  # asked again after the grace period ran out
+        with self._lock:
+            frame, at = self._view, self._sight.at
+        if frame is None or time.time() - at > STALE * 2:
+            return None
+        width = max(80, min(int(width), frame.shape[1] * 2))
+        small = cv2.resize(frame, (width, round(frame.shape[0] * width / frame.shape[1])),
+                           interpolation=cv2.INTER_AREA)
+        ok, png = cv2.imencode(".png", small)
+        return png.tobytes() if ok else None
+
+    def _viewed(self, now: float) -> bool:
+        return now - self._view_at < VIEWER_GONE
 
     # --- the camera thread ---
 
@@ -177,14 +275,14 @@ class Eyes:
         mouth = MouthMotion()
         gestures = GestureFilter(config.GESTURE_HOLD_MS / 1000, config.GESTURE_MIN_SCORE)
         cam, warned, last_face, last_ms = None, False, time.time(), -1
-        t0 = time.time()
+        t0 = last_frame = time.time()
         while True:
             if not self._watching.is_set():  # paused: let go of the camera before waiting
                 if cam is not None:
                     cam.release()
                     cam = None
                 with self._lock:
-                    self._sight, self._gesture_seen = Sight(), {}
+                    self._sight, self._gesture_seen, self._view = Sight(), {}, None
                 self._watching.wait()
             if cam is None:
                 cam = cv2.VideoCapture(config.CAMERA_INDEX, cv2.CAP_DSHOW)  # DSHOW opens much faster than MSMF
@@ -239,5 +337,25 @@ class Eyes:
                 if gesture:
                     self._gesture_seen[gesture] = now
 
-            fps = IDLE_FPS if now - last_face > IDLE_AFTER else config.CAMERA_FPS
+            if viewed := self._viewed(now):
+                gestures_seen = list(h.gestures) + [[]] * len(h.hand_landmarks)  # a hand may have no guess
+                hands_seen = [(marks, g[0].category_name if g else None, g[0].score if g else 0.0)
+                              for marks, g in zip(h.hand_landmarks, gestures_seen)]
+                try:
+                    drawn = annotate(frame, f.face_landmarks, hands_seen, self.sight(),
+                                     1 / max(1e-3, now - last_frame))
+                except Exception as e:  # a bad drawing mustn't stop the eyes the wake gestures rely on
+                    print(f"  [eyes] couldn't draw the view: {type(e).__name__}: {e}")
+                    drawn = frame
+                with self._lock:
+                    self._view = drawn
+            elif self._view is not None:
+                with self._lock:
+                    self._view = None
+            last_frame = now
+            if self._view_only and now - self._view_at > VIEW_ONLY_GRACE:
+                print("  [eyes] view closed: camera off again")
+                self._watching.clear()  # opened just for the view; the top of the loop lets go of it
+                continue
+            fps = IDLE_FPS if now - last_face > IDLE_AFTER and not viewed else config.CAMERA_FPS
             time.sleep(max(0.0, 1 / fps - (time.time() - now)))

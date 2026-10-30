@@ -1,7 +1,12 @@
 """JARVIS v0 — run `python jarvis.py` for voice, or `python jarvis.py --text` to test by typing."""
 import argparse
+import atexit
+import os
 import re
+import subprocess
+import sys
 import time
+from pathlib import Path
 
 import brains
 import config
@@ -17,6 +22,23 @@ EYES_OFF = re.compile(rf"(?:(?:turn|switch|shut) ?(?:off|of)|off|of|disable|stop
                       rf"(?:turn |switch |shut )?{_EYE} (?:off|of)|stop watching|close (?:your |my )?(?:eyes|ice)")
 EYES_ON = re.compile(rf"(?:(?:turn|switch) ?on|on|enable|start) {_EYE}|"
                      rf"(?:turn |switch )?{_EYE} on|start watching|open (?:your |my )?(?:eyes|ice)")
+# "show me what you're seeing", "what do you see", "show your POV": the small live camera view by the orb
+_YOU_SEE = r"(?:you(?:'re| are)?|youre) (?:seeing|see|looking at|watching)"
+_VIEW = (r"(?:pov|p o v|point of view|perspective|view|vision|eyes|camera(?: view| feed)?|(?:live |camera )?feed|"
+         r"webcam|cam)")
+POV_ON = re.compile(rf"(?:show|let) me what {_YOU_SEE}|show what {_YOU_SEE}|"
+                    rf"what (?:are you|you(?:'re| are)|do you|can you|you) (?:seeing|see|looking at|watching)|"
+                    rf"(?:show|give)(?: me)? (?:your |the )?{_VIEW}|"
+                    # not "open camera": that may be the Windows Camera app
+                    r"open (?:your |the )?(?:pov|point of view|view|vision|camera (?:view|feed)|feed)|"
+                    rf"let me see (?:what {_YOU_SEE}|"
+                    rf"through your eyes|your {_VIEW})|(?:your |the )?(?:pov|point of view)|what you show me")
+# "close the view", "hide your POV", "stop showing me": not "close the camera", which may be the Camera app
+POV_OFF = re.compile(r"(?:close|hide|stop|exit|dismiss|turn off|switch off)(?: the| your| that)? "
+                     r"(?:pov|point of view|view|vision|camera (?:view|feed)|(?:live )?feed|preview)|"
+                     r"stop showing(?: me)?(?: (?:that|it|the camera|what you(?:'re| are)? (?:see|seeing)))?")
+_POLITE_START = re.compile(r"^(?:(?:hey |ok |okay )?jarvis |(?:can|could|would|will) you |please |just )+")
+_POLITE_END = re.compile(r"(?: (?:please|now|jarvis|sir|right now|for me|for a sec(?:ond)?))+$")
 # "type mode start" / "start typing": dictate into the focused window until "type mode done"
 TYPE_START = re.compile(r"(?:start[\s,-]+)?(?:type|typing|tight|dictation)[\s-]*mode(?:[\s,-]+(?:start|started|on|please))?|"
                         r"start[\s,-]+(?:typing|dictation|dictating)")
@@ -63,6 +85,7 @@ def run_voice(memory, camera: bool = True):
         if not eyes.watching:
             print("  [eyes] camera off; say \"camera on\" to use it")
     hud.info(mode="voice", camera=eyes.watching if eyes else None)
+    hud.set_camera(eyes.view_png if eyes else None)  # the POV view's frames
     mouth = Mouth(ears, eyes)  # saying "jarvis" again or an open palm interrupts a reply
     voice_id = VoiceID()
     try:
@@ -71,21 +94,38 @@ def run_voice(memory, camera: bool = True):
         print(f"  [type] hotkey off: {e}")
 
     def confirm(q):
-        how = mouth.say(q)
-        if how == "palm":  # a palm while it asks means "no, leave it"
-            return False
-        for _ in range(3):  # silence or a mumble isn't a "no": ask again rather than throw work away
-            # "yes" said over the question counts; otherwise a yes/no after a long question often takes a moment
-            reply, _ = ears.after_barge() if how == "voice" else ears.listen(wait=8)
-            how = None
-            reply = (reply or "").lower()
-            print(f"YOU: {reply}")
-            if NO.search(reply):  # first, so "don't keep it" isn't heard as "keep it"
+        qid = hud.ask(q)  # also answerable with a click on the HUD or the orb
+        clicked = lambda: hud.pending_answer(qid) is not None  # noqa: E731
+        settled, answer = "timeout", False
+        try:
+            how = mouth.say(q)
+            if how == "palm":  # a palm while it asks means "no, leave it"
+                settled = "palm"
                 return False
-            if YES.search(reply):
-                return True
-            mouth.say(f"Sorry {config.USER_TITLE}, was that a yes or a no?")
-        return False
+            for _ in range(3):  # silence or a mumble isn't a "no": ask again rather than throw work away
+                if clicked():
+                    break
+                # "yes" said over the question counts; otherwise a yes/no after a long question takes a moment
+                reply, _ = ears.after_barge() if how == "voice" else ears.listen(wait=8, stop=clicked)
+                how = None
+                if clicked():
+                    break
+                reply = (reply or "").lower()
+                print(f"YOU: {reply}")
+                if NO.search(reply):  # first, so "don't keep it" isn't heard as "keep it"
+                    settled = "voice"
+                    return False
+                if YES.search(reply):
+                    settled, answer = "voice", True
+                    return True
+                mouth.say(f"Sorry {config.USER_TITLE}, was that a yes or a no?")
+            if clicked():
+                settled, answer = "click", hud.pending_answer(qid)
+                print(f"YOU (clicked): {'yes' if answer else 'no'}")
+                return answer
+            return False
+        finally:
+            hud.close_ask(qid, settled, answer)
 
     brain = Brain(memory, confirm, mouth.say)
     mouth.say(f"Online and ready, {config.USER_TITLE}.")
@@ -94,36 +134,48 @@ def run_voice(memory, camera: bool = True):
     follow_up = 0  # seconds to keep listening without the wake word after a reply; 0 = wait for it
     asked = False  # the last reply was a question, so a short "okay" is an answer, not "I'm done"
     while True:
-        if barged:
+        typed = None if barged else hud.take_typed()  # typed into the orb's chat bar (right-click it)
+        if typed:
+            text, audio = typed, None
+        elif barged:
             barged = False
             text, audio = ears.after_barge()
             if not text or is_noise(text) or is_echo(text, brain.last_reply()):
                 continue  # a cough, or the mic hearing JARVIS itself
             if STOP.fullmatch(text.lower().strip(" .!?,")):
                 print("  [barge] stopped")
+                hud.emit("barge", how="stop")
                 continue
         elif follow_up:
             # still in the conversation: a short beep says "go on", and silence ends it
             mouth.beep()
-            text, audio = ears.listen(wait=follow_up)
+            text, audio = ears.listen(wait=follow_up, stop=hud.has_typed)
             follow_up = 0
             if not text or is_noise(text, asked) or is_echo(text, brain.last_reply()):
                 continue
         else:
             # "hey Jarvis" anywhere; on camera also "Jarvis, ..." or a hand sign while speaking
-            heard = ears.wait_for_attention(eyes) if not woken else None
+            heard = ears.wait_for_attention(eyes, typed=hud.has_typed) if not woken else None
             woken = False
+            if heard and heard.how == "typed":
+                continue  # taken at the top of the loop
             text, audio = (heard.text, heard.audio) if heard else ("", None)
             if heard and heard.how != "wake":
                 print(f"  [eyes] {heard.how}" + (f" ({heard.gesture})" if heard.gesture else ""))
             if not text:  # the wake word, or just "Jarvis" on its own
                 how = mouth.say(f"Yes, {config.USER_TITLE}?")
-                text, audio = ears.after_barge() if how == "voice" else ears.listen()
+                text, audio = ears.after_barge() if how == "voice" else ears.listen(stop=hud.has_typed)
                 if not text:
                     continue
-        speaker, score = voice_id.identify(audio) if audio is not None else ("unknown", 0.0)
-        print(f"YOU ({speaker} {score:.2f}): {text}")
-        hud.node("ears", "voice")
+        if typed:
+            # no voice to recognise: whoever spoke to JARVIS last is the one at the keyboard
+            speaker = voice_id.last[0] if voice_id.last else "unknown"
+            print(f"YOU ({speaker}, typed): {text}")
+            hud.node("ears", "typed")
+        else:
+            speaker, score = voice_id.identify(audio) if audio is not None else ("unknown", 0.0)
+            print(f"YOU ({speaker} {score:.2f}): {text}")
+            hud.node("ears", "voice")
         hud.node("voice", speaker)
         said = text.lower().strip(" .!?,")
         if said in SLEEP_WORDS:
@@ -131,6 +183,9 @@ def run_voice(memory, camera: bool = True):
             continue
         if (on := eyes_command(said)) is not None:
             mouth.say(eyes_switch(eyes, on))
+            continue
+        if (on := pov_command(said)) is not None:
+            mouth.say(pov_switch(eyes, on))
             continue
         if TYPE_START.fullmatch(said):
             type_mode(ears, mouth)
@@ -145,6 +200,8 @@ def run_voice(memory, camera: bool = True):
         answer = brain.last_reply()
         woken = interrupted == "wake"
         barged = interrupted == "voice"
+        if interrupted:
+            hud.emit("barge", how=interrupted)
         asked = answer.rstrip().endswith("?")
         if interrupted == "palm":  # told to stop: no follow-up window either
             asked = False
@@ -184,6 +241,31 @@ def eyes_command(said: str) -> bool | None:
     return None
 
 
+def pov_command(said: str) -> bool | None:
+    """True to show the camera view ("show me what you're seeing"), False to close it, None if it's neither.
+    Ignores punctuation and polite padding ("jarvis, can you ... please")."""
+    t = " ".join(re.sub(r"[^\w' ]", " ", said.lower()).split())
+    t = _POLITE_END.sub("", _POLITE_START.sub("", t))
+    if POV_OFF.fullmatch(t):
+        return False
+    if POV_ON.fullmatch(t):
+        return True
+    return None
+
+
+def pov_switch(eyes, on: bool) -> str:
+    """Open or close the small view of what the camera sees (with what's being tracked drawn on), by the orb."""
+    if eyes is None:
+        return f"My camera is switched off in settings, {config.USER_TITLE}. Set CAMERA_ENABLED to true to use it."
+    if not on:
+        hud.pov(False)
+        return f"Closed it, {config.USER_TITLE}."
+    opened = eyes.show_view()
+    hud.pov(True)
+    return (f"Here's what I'm seeing, {config.USER_TITLE}." +
+            (" I've opened the camera just for this; it closes again with the view." if opened else ""))
+
+
 def eyes_switch(eyes, on: bool) -> str:
     """Turn the camera on or off by voice; off frees it for video calls and turns the LED off."""
     if eyes is None:
@@ -192,6 +274,8 @@ def eyes_switch(eyes, on: bool) -> str:
         return f"{'Already watching' if on else 'My eyes are already closed'}, {config.USER_TITLE}."
     eyes.resume() if on else eyes.pause()
     hud.info(camera=on)
+    if not on:
+        hud.pov(False)  # nothing left to show
     return (f"Watching again, {config.USER_TITLE}." if on else
             f"Eyes closed, {config.USER_TITLE}. The camera is free; say \"hey Jarvis\" when you need me.")
 
@@ -212,7 +296,30 @@ def is_noise(text: str, asked: bool = False) -> bool:
     return len(t) < 2 or t in (_ALWAYS_GHOSTS if asked else _WHISPER_GHOSTS)
 
 
+def start_orb(url: str):
+    """The desktop orb, in its own process so it can never stall or crash the voice loop."""
+    try:
+        orb = subprocess.Popen([sys.executable, str(Path(__file__).with_name("orb.py")), url])
+    except OSError as e:
+        print(f"  [orb] couldn't start: {e}")
+        return
+    atexit.register(orb.terminate)
+
+
+def log_to_file_if_windowless():
+    """Started by pythonw (the login shortcut from install_startup.ps1) there's no console: print() would
+    go nowhere and a crash would leave no trace, so both go to data/jarvis.log instead."""
+    if sys.stdout is not None:
+        return
+    Path("data").mkdir(exist_ok=True)
+    log = open("data/jarvis.log", "a", buffering=1, encoding="utf-8")
+    sys.stdout = sys.stderr = log
+    print(f"\n--- JARVIS starting {time.strftime('%Y-%m-%d %H:%M:%S')} ---")
+
+
 if __name__ == "__main__":
+    os.chdir(Path(__file__).resolve().parent)  # data/, voices/ and .env are relative to here
+    log_to_file_if_windowless()
     p = argparse.ArgumentParser()
     p.add_argument("--text", action="store_true", help="type instead of speaking")
     p.add_argument("--no-camera", action="store_true", help="don't use the webcam even if CAMERA_ENABLED=true")
@@ -221,6 +328,8 @@ if __name__ == "__main__":
     brains.load_saved()  # the model last switched to by voice, over OLLAMA_MODEL in .env
     if config.HUD_ENABLED and (url := hud.start()):
         print(f"  [hud] {url}")
+        if config.ORB_ENABLED and not args.text:
+            start_orb(url)
     try:
         run_text(mem) if args.text else run_voice(mem, camera=not args.no_camera)
     except KeyboardInterrupt:

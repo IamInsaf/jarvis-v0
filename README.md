@@ -17,16 +17,24 @@ mic → wake word → Whisper (local) → Ollama LLM (local) ⇄ tools → Piper
 | File | What it does |
 |---|---|
 | `jarvis.py` | Main loop. `python jarvis.py` for voice, `--text` to type |
-| `ears.py` | Wake word (openWakeWord) + record until silence + faster-whisper |
+| `ears.py` | Wake word (openWakeWord) + record until you stop talking + faster-whisper; talk-over interruptions |
+| `debug_wake.py` / `enroll_wake.py` | Check your wake-word score / train it on your voice |
+| `install_startup.ps1` | Start JARVIS when you sign in to Windows (`-Remove` to undo) |
+| `vad.py` | Silero voice detection: is that speech, or just noise? |
 | `brain.py` | Ollama tool-calling agent loop + JARVIS personality |
 | `tools.py` | Abilities: time, web search, remember/recall/forget, cloud expert, self-upgrade |
 | `selfcode.py` | Drafts, checks and saves new abilities as plugins, with your approval |
 | `plugins/` | One file per learned ability — safe to inspect, edit by hand, or delete |
 | `memory.py` | SQLite facts + conversation log |
 | `router.py` | The only path to the cloud: redacts, asks permission |
-| `mouth.py` | Piper text-to-speech |
+| `mouth.py` | Piper text-to-speech, spoken clause by clause as the reply is written |
+| `speech_chunker.py` | Cuts a streaming reply into speakable clauses |
+| `desktop.py` | Hands on the PC: keys, typing, windows, media and volume, reading the screen, PowerShell |
+| `executor.py` | The safety gate every tool passes: run, ask first, or refuse |
+| `briefing.py` | "Good morning": the day at a glance, on request or daily at `BRIEFING_TIME` |
 | `fingers.py` | Type mode: dictate into any app (hold right Ctrl, or say "type mode start") |
 | `hud.py` | Live dashboard: voice orb, request pipeline, tasks, timers, stats (http://127.0.0.1:8766) |
+| `orb.py` | Always-on-top desktop orb with live captions and YES / NO buttons |
 | `config.py` / `.env` | All settings |
 
 ## Setup (Windows, macOS or Linux)
@@ -67,6 +75,25 @@ python jarvis.py          # then voice: say "Hey Jarvis"
 Try: "Hey Jarvis, remember that I study mechanical engineering" → later "what do I study?"
 Try: "Hey Jarvis, what's the latest news on SpaceX?" (uses private search)
 
+**"Hey Jarvis" doesn't always hear you?** The stock wake-word model was trained mostly on American and
+British voices, so other accents can score under its 0.5 cut-off.
+1. `python debug_wake.py`: say "Hey Jarvis" a few times, press Ctrl+C, and it suggests a `WAKE_THRESHOLD`
+   for `.env`. Lowering the threshold is often enough.
+2. If it's still hit and miss, run `python enroll_wake.py`. You record "Hey Jarvis" 10 times and read a few sentences
+   aloud, and it trains a small verifier on your voice (`data/wake_verifier.pkl`). JARVIS then accepts weaker matches,
+   but only in your voice, so the TV and other people don't set it off. Want to re-record? Just run it again.
+   `--retrain` retrains on the last recordings, e.g. after changing `WAKE_VERIFIER_THRESHOLD`.
+
+**6. Start with Windows** (optional)
+```powershell
+.\install_startup.ps1          # adds JARVIS to your Startup folder
+.\install_startup.ps1 -Remove  # takes it out again
+```
+When you sign in, JARVIS starts with no console window; the orb in the corner shows it's running, and its output
+goes to `data\jarvis.log`. Ollama already starts with Windows. For web search, turn on "Start Docker Desktop when you
+sign in" in Docker Desktop's settings (JARVIS works without it, just without search). To stop it, end `pythonw.exe`
+in Task Manager ("shut down" only makes it go quiet). Don't also run `python jarvis.py` by hand while it's running, or two of them will answer.
+
 ## HUD: watch JARVIS think
 While `python jarvis.py` runs (voice or `--text`), open **http://127.0.0.1:8766** — F11 on a second
 monitor looks the part.
@@ -74,11 +101,25 @@ monitor looks the part.
   (cyan standby/listening, amber processing, white speaking, red when Ollama stops answering).
 - **Pipeline:** each request travels through the real parts — input → voice ID → rules or router →
   category → memory / tools → LLM → output — with the tool and category it picked.
-- **Panels:** system (model, Ollama, camera, CPU/RAM), activity (requests, facts, routes per category),
-  tasks and live timer countdowns, and the transcript.
+- **Panels:** system (model, Ollama, camera, CPU/RAM, time to first word), activity (requests, facts,
+  routes per category), tasks and live timer countdowns, and the transcript, which fills in clause by
+  clause as JARVIS speaks and marks interruptions and anything the safety gate blocked or asked about.
+- **Approvals:** when JARVIS asks a yes/no question, a card with YES / NO appears; click or just answer out loud.
 
 It only listens on this machine and loads nothing from the internet. Change the port with `HUD_PORT`
-or turn it off with `HUD_ENABLED=false`. `python hud.py` on its own shows tasks and stats, without the live parts.
+or turn it off with `HUD_ENABLED=false`. `python hud.py` on its own shows tasks and stats, without the live parts;
+`python hud.py --demo` plays a scripted conversation through it (and the orb) so you can see it all without a mic.
+
+## The orb
+With the voice loop running, a small orb sits in the bottom-right corner over every app: the same colours as
+the HUD, pulsing as you and JARVIS speak, with captions of what was heard and said beside it. When JARVIS asks
+a yes/no question it shows YES / NO buttons too. Drag it anywhere (it remembers), click it to open the HUD,
+right-click to type instead of talking: a chat bar opens above the orb, Enter sends (JARVIS answers just as if
+you'd said it, out loud and in the captions), Esc closes it, and its ⋯ button has the menu. Say or type "show me what you're
+seeing" (or "what do you see", "show your POV") and a small live camera view opens above the orb, with boxes
+round the faces and hands JARVIS is tracking, whether you're facing it and talking, and the hand sign it reads;
+"close the view" or its ✕ closes it. If the camera was off it opens just for the view and closes again after. It runs as its own process, so closing it never stops JARVIS. Settings: `ORB_ENABLED`,
+`ORB_SIZE`, `ORB_CAPTIONS`, `ORB_IDLE` (`dim`, `hide` or `show` when nothing's happening).
 
 ## Type mode: dictate into any app (Windows)
 Like Wispr Flow, but offline and free: the same local Whisper types what you say wherever your cursor is.
