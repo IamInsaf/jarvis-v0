@@ -45,6 +45,13 @@ CATEGORIES = {
               ["add_task", "list_tasks", "complete_task", "remove_task"],
               "Only the to-do list tools know what's on the list: never list, count or claim tasks yourself. "
               "Adding a task is just writing it down, not doing it."),
+    "focus": ("focus mode: the main task the user is working on and being kept on track with — starting or "
+              "switching it, its next step, snoozing reminders, a break, parking, finishing or stopping it, "
+              "'where was I', or how focused they were today. Not the to-do list",
+              ["focus_start", "focus_next_step", "focus_snooze", "focus_break", "focus_park", "focus_resume",
+               "focus_done", "focus_stop", "focus_status", "focus_log"],
+              "focus_start starts focus mode or switches it to a new task. Never say focus mode started, stopped or "
+              "paused unless a focus tool said so."),
     "messages": ("texting or messaging someone (WhatsApp), or saving, listing or deleting someone's phone number",
                  ["send_message", "save_contact", "list_contacts", "forget_contact"],
                  "send_message reads the message back and asks before sending; never say a message was sent "
@@ -84,6 +91,9 @@ ABILITY_PREFIX = "use_"
 _SKILL_ASK = re.compile(r"\b(?:learn|teach|add|build|create|make|give yourself|remove|delete|forget|uninstall|"
                         r"get rid of)\b", re.I)
 _TASK_TALK = re.compile(r"\b(?:to-?dos?|to do list|task ?list|tasks?)\b", re.I)
+# "I'm done with this task", "switch my task to the API": the focus task, not the to-do list
+_FOCUS_TALK = re.compile(r"\b(?:focus(?:ed|ing)?|next step|breadcrumb|snooze|on a break|take a break|park|"
+                         r"working on|where was i|back to work|distract\w*)\b", re.I)
 _TIMER_TALK = re.compile(r"\b(?:timers?|alarms?|remind(?:er|ers)?)\b", re.I)
 _SITE_JOB = re.compile(r"\b(?:build|make|create|design|code|change|edit|update|fix|show|run|serve|stop|start)\b.*"
                        r"\b(?:web ?sites?|web ?pages?|web apps?|landing pages?|portfolio(?: site)?)\b", re.I)
@@ -112,14 +122,14 @@ def route(user_text: str, previous: str, plugins: dict) -> str | None:
     # "make a landing page" went to create_file, and "make the header blue on sweet crumbs" to web search
     # before the site check: "add a task to complete the website" is a to-do, and it went to the builder
     if _TASK_TALK.search(user_text) and not _TIMER_TALK.search(user_text):
-        return "tasks"
+        return "focus" if _FOCUS_TALK.search(user_text) and config.FOCUS_ENABLED else "tasks"
     projects = _site_projects()
     if _SITE_JOB.search(user_text) or any(_project_named(p, user_text) for p in projects):
         return "websites"
     # "text my mom: ..." and "mom's number is ..." are unmistakable; "mom's number" went to memory
     if messaging.SEND.match(user_text) or messaging.SAVE.search(user_text):
         return "messages"
-    cats = {name: desc for name, (desc, _, _) in CATEGORIES.items()}
+    cats = {name: desc for name, (desc, _, _) in CATEGORIES.items() if name != "focus" or config.FOCUS_ENABLED}
     if projects:
         cats["websites"] += f" (projects so far: {', '.join(projects)})"
     for name, m in plugins.items():

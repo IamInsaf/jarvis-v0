@@ -60,6 +60,8 @@ def run_text(memory):
     confirm = lambda q: input(f"{q} [y/N] ").strip().lower().startswith("y")
     speak = lambda text: print(f"JARVIS: {text}")  # timers etc. fire on a background thread
     brain = Brain(memory, confirm, speak)
+    if brain.tools.focus:
+        brain.tools.focus.deliver = speak  # no voice loop to wait for: focus reminders are printed at once
     hud.info(mode="text")
     print("JARVIS (text mode). Type 'exit' to quit.")
     while True:
@@ -128,12 +130,19 @@ def run_voice(memory, camera: bool = True):
             hud.close_ask(qid, settled, answer)
 
     brain = Brain(memory, confirm, mouth.say)
+    guard = brain.tools.focus  # its reminders are said here, between conversations, never over one
+    reminder_due = guard.has_prompt if guard else (lambda: False)
     mouth.say(f"Online and ready, {config.USER_TITLE}.")
     woken = False
     barged = False  # the user talked over the last reply: what they said is the next request
     follow_up = 0  # seconds to keep listening without the wake word after a reply; 0 = wait for it
     asked = False  # the last reply was a question, so a short "okay" is an answer, not "I'm done"
     while True:
+        if not (barged or woken or follow_up) and guard and (reminder := guard.take_prompt()):
+            how = mouth.say(reminder)
+            hud.emit("reply", text=reminder)
+            woken, barged = how == "wake", how == "voice"  # "hey Jarvis, snooze" said over it
+            continue
         typed = None if barged else hud.take_typed()  # typed into the orb's chat bar (right-click it)
         if typed:
             text, audio = typed, None
@@ -155,10 +164,11 @@ def run_voice(memory, camera: bool = True):
                 continue
         else:
             # "hey Jarvis" anywhere; on camera also "Jarvis, ..." or a hand sign while speaking
-            heard = ears.wait_for_attention(eyes, typed=hud.has_typed) if not woken else None
+            heard = (ears.wait_for_attention(eyes, typed=lambda: hud.has_typed() or reminder_due())
+                     if not woken else None)
             woken = False
             if heard and heard.how == "typed":
-                continue  # taken at the top of the loop
+                continue  # taken at the top of the loop, like a focus reminder that came up
             text, audio = (heard.text, heard.audio) if heard else ("", None)
             if heard and heard.how != "wake":
                 print(f"  [eyes] {heard.how}" + (f" ({heard.gesture})" if heard.gesture else ""))
@@ -296,6 +306,22 @@ def is_noise(text: str, asked: bool = False) -> bool:
     return len(t) < 2 or t in (_ALWAYS_GHOSTS if asked else _WHISPER_GHOSTS)
 
 
+def focus_probe():
+    """--focus-test: what the Focus Guardian can see right now, before it starts watching."""
+    import focus
+    s = focus.load_settings(test_mode=True)
+    print("  [focus] test mode: reminders after "
+          + ", ".join(f"{s[f'{n}_minutes'] * 60:g}s ({n})" for n in focus.LEVELS.values())
+          + f", checked every {s['check_seconds']}s")
+    title, proc = focus.foreground_window()
+    print(f"  [focus] window in front: {title or '(none)'} [{proc or '?'}]; idle {focus.idle_seconds():.0f}s")
+    probe = focus.FocusGuardian(":memory:", s)  # nothing saved, and no watch until a session starts
+    latest = probe.claude_latest()
+    print("  [focus] latest Claude Code session: " + (f"{latest[0] or latest[1]}, {time.time() - latest[2]:.0f}s ago"
+                                                     if latest else "none found"))
+    print(f"  [focus] project it would pick: {probe.detect_project() or '(none)'}")
+
+
 def start_orb(url: str):
     """The desktop orb, in its own process so it can never stall or crash the voice loop."""
     try:
@@ -323,7 +349,12 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--text", action="store_true", help="type instead of speaking")
     p.add_argument("--no-camera", action="store_true", help="don't use the webcam even if CAMERA_ENABLED=true")
+    p.add_argument("--focus-test", action="store_true",
+                   help="Focus Guardian in seconds instead of minutes, printing every check (focus_settings.json)")
     args = p.parse_args()
+    if args.focus_test:
+        config.FOCUS_TEST_MODE = True
+        focus_probe()
     mem = Memory(config.DB_PATH)
     brains.load_saved()  # the model last switched to by voice, over OLLAMA_MODEL in .env
     if config.HUD_ENABLED and (url := hud.start()):

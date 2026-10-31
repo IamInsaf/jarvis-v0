@@ -32,6 +32,7 @@ mic → wake word → Whisper (local) → Ollama LLM (local) ⇄ tools → Piper
 | `desktop.py` | Hands on the PC: keys, typing, windows, media and volume, reading the screen, PowerShell |
 | `executor.py` | The safety gate every tool passes: run, ask first, or refuse |
 | `briefing.py` | "Good morning": the day at a glance, on request or daily at `BRIEFING_TIME` |
+| `focus.py` / `focus_settings.json` | Focus Guardian: keeps you on your main task, nudging you back when you drift |
 | `fingers.py` | Type mode: dictate into any app (hold right Ctrl, or say "type mode start") |
 | `hud.py` | Live dashboard: voice orb, request pipeline, tasks, timers, stats (http://127.0.0.1:8766) |
 | `orb.py` | Always-on-top desktop orb with live captions and YES / NO buttons |
@@ -130,6 +131,37 @@ Like Wispr Flow, but offline and free: the same local Whisper types what you say
 - Say "new line" or "new paragraph" for line breaks.
 - The text is pasted (clipboard + Ctrl+V), which works in every app; whatever text you had copied is put back.
 - Click where the text should go first. Apps running as administrator need JARVIS run as administrator too.
+
+## Focus Guardian: stay on your main task
+Tell JARVIS what you're working on and it watches which window is in front. Drift off and it reminds you,
+firmer the longer it lasts: **gentle at 5 minutes, firm at 15, strong at 30**, then every 10 minutes. The
+lines are written by your local model to fit (stock lines when the brain is off or Ollama doesn't answer), and
+they're only ever said between conversations, never over one.
+
+| Say | What happens |
+|---|---|
+| "Focus on the login page in jarvis-v0" / "I'm working on the report" | Starts watching. The project is taken from what you said, or from the editor in front |
+| "The next step is the logout button" / "Breadcrumb: ..." | Leaves a breadcrumb, read back when you return or ask |
+| "Where was I?" / "What am I working on?" | The task, time focused so far and the next step |
+| "Snooze for 20 minutes" | No reminders for a while (default 10 minutes) |
+| "I'm taking a break for 15 minutes" | No reminders; calls you back to the task when it's over |
+| "Park this" → "Back to work" | Puts the task on hold, keeping its next step, and picks it up again |
+| "Switch my focus to the tests" | Logs the old task as switched and starts the new one |
+| "I'm done with this task" / "Stop focus mode" | Ends the session (finished or not) and logs it |
+| "How did I do today?" | The day's log: time on each task, time adrift, reminders |
+
+**What counts as on task:** with a project, any window whose title names it (VS Code's
+`app.py - jarvis-v0 - Visual Studio Code`, the GitHub page), or a terminal while a Claude Code session in that
+project was written to in the last few minutes (read from `~/.claude/projects`). An editor on another project
+counts as drifting. Without a project, any editor or terminal, a window mentioning the task, or docs and
+localhost. No keyboard or mouse for 5 minutes means you've stepped away and the clock pauses, except on a video
+site (YouTube, Netflix, Twitch...): watching counts as drifting. A session survives a restart.
+
+**Settings:** thresholds, editors, terminals, video and distraction sites are in `focus_settings.json`;
+`FOCUS_ENABLED=false` turns it off. **Try it in seconds:** `python jarvis.py --focus-test` (add `--text` to type)
+prints what it can see (window, idle time, latest Claude Code session, the project it would pick), then uses the
+file's `test_mode` block: reminders after 15, 30 and 60 seconds, every check printed. Say "focus on ..." with your
+project open, switch to YouTube, and wait.
 
 ## Self-upgrade: learning new abilities on the fly
 Ask for something JARVIS has no tool for ("Hey Jarvis, learn to flip a coin") and it calls

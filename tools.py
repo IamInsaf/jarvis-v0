@@ -14,6 +14,7 @@ import config
 import desktop
 import hud
 import executor
+import focus
 import radios
 import router
 import rules
@@ -55,6 +56,8 @@ class Tools:
         self.ctx = PluginContext(memory, confirm, speak)
         self.scheduler = Scheduler(config.DB_PATH, speak)
         briefing.start_daily(lambda: speak(briefing.compose(self.scheduler, self.todos)))  # if BRIEFING_TIME is set
+        # its reminders wait in a queue for the voice loop to say between conversations (jarvis.py)
+        self.focus = focus.FocusGuardian(config.DB_PATH) if config.FOCUS_ENABLED else None
         self._opened = (0, None)  # (window in front, when) at the last open_app, see _settle
         self.plugins = {}  # tool name -> loaded module
         self.plugin_paths = {}  # tool name -> its file (named after the description, not the tool)
@@ -148,6 +151,22 @@ class Tools:
             _fn("remove_task", "Delete a task from the to-do list without doing it, or 'all' to clear it.",
                 {"which": "its number, some of its words, or 'all'"}),
             _fn("forget_contact", "Delete a saved phone number, when the user asks.", {"name": "whose number"}),
+            _fn("focus_start", "Start focus mode on the user's main task, or switch it to a new one; JARVIS then "
+                "reminds them when they drift ('focus on the login page', 'I'm working on the report').",
+                {"task": "the task in the user's words, with the project if they named one"}),
+            _fn("focus_next_step", "Note the next step of the focus task, to be read back later (a breadcrumb).",
+                {"step": "the next step in the user's words"}),
+            _fn("focus_snooze", "Pause focus reminders for a while.",
+                {"minutes": "how long as the user said it, e.g. '20 minutes', empty for the default"}),
+            _fn("focus_break", "The user is taking a break: no reminders until it's over, then call them back.",
+                {"minutes": "how long as the user said it, e.g. '15 minutes', empty for the default"}),
+            _fn("focus_park", "Park the focus task for later: stop watching, keep the task and next step.", {}),
+            _fn("focus_resume", "Resume the focus task after a break, a snooze or parking it ('back to work').", {}),
+            _fn("focus_done", "The focus task is finished: log it and stop watching.", {}),
+            _fn("focus_stop", "Turn focus mode off without the task being finished.", {}),
+            _fn("focus_status", "Say what the focus task is, time spent and the next step ('where was I').", {}),
+            _fn("focus_log", "Today's focus log: time on each task, time adrift, reminders ('how did I do today').",
+                {}),
             _fn("ask_cloud_expert",
                 "Ask a stronger cloud model a HARD general reasoning or coding question. "
                 "Never include names, contacts, locations or other personal details.",
@@ -308,6 +327,8 @@ class Tools:
                 return self.todos.complete(args.get("which", ""))
             if name == "remove_task":
                 return self.todos.remove(args.get("which", ""))
+            if name.startswith("focus_"):
+                return self._focus(name, args)
             if name == "forget_contact":
                 return self.messenger.forget_contact(args["name"])
             if name == "ask_cloud_expert":
@@ -324,6 +345,18 @@ class Tools:
             return f"Unknown tool: {name}"
         except Exception as e:  # tools must never crash the loop
             return f"Tool {name} failed: {e}"
+
+    def _focus(self, name: str, args: dict) -> str:
+        f = self.focus
+        if f is None:
+            return f"Focus mode is switched off in settings, {config.USER_TITLE}. Set FOCUS_ENABLED to true to use it."
+        actions = {"focus_start": lambda: f.start(args.get("task", "")),
+                   "focus_next_step": lambda: f.next_step(args.get("step", "")),
+                   "focus_snooze": lambda: f.snooze(args.get("minutes", "")),
+                   "focus_break": lambda: f.take_break(args.get("minutes", "")),
+                   "focus_park": f.park, "focus_resume": f.resume, "focus_done": f.done, "focus_stop": f.stop,
+                   "focus_status": f.status, "focus_log": f.log}
+        return actions[name]() if name in actions else f"Unknown tool: {name}"
 
     def _settle(self):
         """Keys or typing right after open_app in the same request ("open notepad and type hello") wait for

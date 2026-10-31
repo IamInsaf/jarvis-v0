@@ -115,3 +115,9 @@ ORB_IDLE = os.getenv("ORB_IDLE", "dim")                             # when quiet
 USER_TITLE = os.getenv("USER_TITLE", "sir")
 # say the day's briefing (schedule, to-dos) unprompted every day at this time, e.g. "07:30"; empty = never
 BRIEFING_TIME = os.getenv("BRIEFING_TIME", "")
+
+# --- Focus Guardian (focus.py): "focus on ..." and it nudges you back when you drift ---
+FOCUS_ENABLED = os.getenv("FOCUS_ENABLED", "true").lower() == "true"
+FOCUS_SETTINGS = os.getenv("FOCUS_SETTINGS", "focus_settings.json")  # thresholds, apps and sites
+# seconds instead of minutes, and every check printed (also `python jarvis.py --focus-test`)
+FOCUS_TEST_MODE = os.getenv("FOCUS_TEST_MODE", "0") == "1"
