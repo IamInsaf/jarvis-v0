@@ -5,6 +5,7 @@ The rest of JARVIS reports into it with one-liners — hud.state("thinking"), hu
 hud.level("mic", 0.4) — which only append to an in-memory buffer, so they cost nothing with no page open.
 The page gets them live over Server-Sent Events and reads tasks, timers and stats straight from SQLite.
 Only listens on this machine (127.0.0.1), stdlib only, and the page loads nothing from the internet."""
+import atexit
 import json
 import os
 import sqlite3
@@ -26,7 +27,7 @@ _events: deque = deque(maxlen=200)
 _next_id = 1
 _state = "idle"
 _levels = {"mic": (0.0, 0.0), "voice": (0.0, 0.0)}  # source -> (0..1, when)
-_info = {"started": time.time(), "mode": None, "camera": None, "first_audio": None}
+_info = {"started": time.time(), "mode": None, "camera": None, "mic": None, "first_audio": None}
 _asks: dict[int, dict] = {}  # yes/no questions JARVIS is waiting on: id -> {"question", "answer": None/True/False}
 _next_ask = 1
 _typed: deque = deque(maxlen=20)  # requests typed into the orb's chat bar, waiting for the voice loop
@@ -46,7 +47,7 @@ def emit(kind: str, **data):
 
 
 def state(name: str):
-    """idle / listening / thinking / speaking / dictating / error"""
+    """standby (mic off) / idle / listening / thinking / speaking / dictating / error"""
     global _state
     if name != _state:
         _state = name
@@ -136,6 +137,19 @@ def node(name: str, label: str = ""):
 def level(source: str, value: float):
     """Loudness 0..1 of the mic ("mic") or JARVIS's own voice ("voice"); sampled by the page, not queued."""
     _levels[source] = (max(0.0, min(1.0, value)), time.time())
+
+
+def shutdown(reason: str = "kill switch"):
+    """The kill switch (orb or HUD): JARVIS exits at once, wherever the voice loop is. The atexit handlers
+    run first (the orb is closed with it); the short delay lets the HTTP reply go out."""
+    def go():
+        print(f"\nJARVIS offline ({reason}).")
+        state("offline")
+        try:
+            atexit._run_exitfuncs()
+        finally:
+            os._exit(0)
+    threading.Timer(0.3, go).start()
 
 
 def info(**kw):
@@ -290,6 +304,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(403, '{"error": "local only"}')
         if self.path == "/api/type":
             return self._post_typed()
+        if self.path == "/api/shutdown":
+            self._send(200, '{"ok": true}')
+            return shutdown()
         if self.path != "/api/answer":
             return self._send(404, '{"error": "not found"}')
         try:
@@ -413,6 +430,11 @@ header { grid-column:1 / -1; display:flex; align-items:center; justify-content:s
            text-shadow:0 0 14px rgba(42,212,255,.6); }
 .brand span, .clock small { font:11px/1 var(--mono); letter-spacing:.2em; color:var(--muted); }
 .clock { text-align:right; font:600 20px/1 var(--mono); letter-spacing:.12em; }
+.hdr-right { display:flex; align-items:center; gap:16px; }
+#kill { font:600 11px/1 var(--mono); letter-spacing:.18em; color:rgb(255,77,94); background:transparent;
+        border:1px solid rgba(255,77,94,.55); border-radius:4px; padding:8px 12px; cursor:pointer; }
+#kill:hover, #kill:focus-visible { background:rgba(255,77,94,.14); outline:none; }
+#kill:disabled { opacity:.5; cursor:default; }
 .clock small { display:block; margin-top:4px; }
 .panel { position:relative; min-height:0; display:flex; flex-direction:column; padding:12px 14px;
          background:linear-gradient(180deg, rgba(10,40,60,.55), rgba(3,16,26,.4));
@@ -523,7 +545,8 @@ header { grid-column:1 / -1; display:flex; align-items:center; justify-content:s
 <main>
   <header>
     <div class="brand"><b>J.A.R.V.I.S</b><span>LOCAL ASSISTANT · v0</span></div>
-    <div class="clock"><span id="clock">--:--:--</span><small id="date"></small></div>
+    <div class="hdr-right"><div class="clock"><span id="clock">--:--:--</span><small id="date"></small></div>
+      <button id="kill" title="Shut JARVIS down (start it again from the desktop icon)">&#x23FB; SHUT DOWN</button></div>
   </header>
 
   <section class="panel" id="sys"><h2>SYSTEM <span id="uptime">--</span></h2><div class="scroll">
@@ -531,6 +554,7 @@ header { grid-column:1 / -1; display:flex; align-items:center; justify-content:s
     <div class="row"><span>ENGINE</span><span id="ollama"><i class="dot"></i>—</span></div>
     <div class="row"><span>THINKING</span><span id="think">—</span></div>
     <div class="row"><span>MODE</span><span id="mode">—</span></div>
+    <div class="row"><span>MIC</span><span id="mic">—</span></div>
     <div class="row"><span>CAMERA</span><span id="camera">—</span></div>
     <div class="row"><span>FIRST WORD</span><span id="firstaudio">—</span></div>
     <div class="meter"><span>CPU</span><div class="bar"><i id="cpu"></i></div><span id="cpuv">—</span></div>
@@ -568,7 +592,8 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const STATES = {
-  idle:      {label:"STANDBY",    rgb:[42,212,255],  speed:.45, fire:.03},
+  standby:   {label:"STANDBY",    rgb:[70,104,124],  speed:.18, fire:0},
+  idle:      {label:"READY",      rgb:[42,212,255],  speed:.45, fire:.03},
   listening: {label:"LISTENING",  rgb:[110,240,255], speed:1.1, fire:.12},
   thinking:  {label:"PROCESSING", rgb:[255,181,71],  speed:2.8, fire:.6},
   speaking:  {label:"SPEAKING",   rgb:[175,246,255], speed:1.5, fire:.2},
@@ -785,6 +810,7 @@ function renderSnap(d) {
   $("#ollama").innerHTML = `<i class="dot ${s.ollama ? "on" : s.ollama === false ? "off" : ""}"></i>${s.ollama ? "ONLINE" : s.ollama === false ? "DOWN" : "—"}`;
   $("#think").textContent = s.think ? "ON" : "OFF";
   $("#mode").textContent = (s.mode || "—").toUpperCase();
+  $("#mic").textContent = s.mic == null ? "—" : s.mic ? "ON" : "OFF (STANDBY)";
   $("#camera").textContent = s.camera == null ? "DISABLED" : s.camera ? "WATCHING" : "OFF";
   $("#firstaudio").textContent = s.first_audio == null ? "—" : s.first_audio.toFixed(1) + " S";
   bar("#cpu", s.cpu); $("#cpuv").textContent = pct(s.cpu);
@@ -873,6 +899,14 @@ async function answerAsk(yes) {
 }
 $("#askyes").onclick = () => answerAsk(true);
 $("#askno").onclick = () => answerAsk(false);
+$("#kill").onclick = async () => {
+  if (!confirm("Shut JARVIS down? Start it again from the desktop icon.")) return;
+  $("#kill").disabled = true;
+  try {
+    await fetch("/api/shutdown", {method:"POST", headers:{"X-Jarvis":"1"}});
+    $("#kill").textContent = "OFFLINE";
+  } catch { $("#kill").disabled = false; }
+};
 const GATE = {blocked:["⛔ BLOCKED ", "bad"], confirm:["? CONFIRM ", ""], approved:["✓ APPROVED ", "good"],
               declined:["✗ DECLINED ", "bad"]};
 

@@ -34,7 +34,7 @@ END = re.compile(r"[\s,]*(?:(?:hey|ok(?:ay)?)\W+)?(?:jarvis\W+)?"
 GHOSTS = {"you", "thanks for watching", "thank you for watching", "uh", "um", "hmm", "bye"}
 
 
-def parse_hotkey(spec: str) -> list[int]:
+def parse_hotkey(spec: str, setting: str = "TYPE_HOTKEY") -> list[int]:
     """Virtual-key codes for "right ctrl" / "ctrl+win"; [] for "off" or "". Raises ValueError on a typo."""
     spec = spec.strip().lower()
     if spec in ("", "off", "none", "false"):
@@ -42,7 +42,7 @@ def parse_hotkey(spec: str) -> list[int]:
     try:
         return [_KEYS[k.strip()] for k in spec.split("+")]
     except KeyError as e:
-        raise ValueError(f"unknown key {e} in TYPE_HOTKEY; use one of: {', '.join(_KEYS)}") from None
+        raise ValueError(f"unknown key {e} in {setting}; use one of: {', '.join(_KEYS)}") from None
 
 
 def clean(text: str) -> str:
@@ -100,22 +100,35 @@ def start_hotkey(ears, spec: str = None) -> threading.Thread | None:
     return t
 
 
-def hold_to_talk(ears, keys, is_down=None, typer=None, once=False):
+def hold_to_talk(ears, keys, is_down=None, typer=None, once=False, chord=None):
+    """`chord()` true means another modifier joined in (Ctrl+Shift is WAKE_HOTKEY): not dictation."""
+    if chord is None:
+        chord = (lambda: _is_down(0x10)) if is_down is None else (lambda: False)
     is_down, typer = is_down or _is_down, typer or type_text
     while True:
         while not all(is_down(k) for k in keys):
             time.sleep(_POLL)
+        if not ears.mic_on:  # standby: dictation only works in voice mode, when the mic is on
+            while any(is_down(k) for k in keys):
+                time.sleep(_POLL)
+            if once:
+                return
+            continue
         ears.start_tap()
         t0 = time.monotonic()
         print("  [type] listening... let go to type it")
+        joined = False
         while all(is_down(k) for k in keys):
+            joined = joined or chord()
             time.sleep(_POLL)
         audio = ears.stop_tap()
         held = time.monotonic() - t0
         while any(is_down(k) for k in keys):  # fully let go first, or the paste becomes Ctrl+Ctrl+V
             time.sleep(_POLL)
         try:
-            if held < MIN_HOLD_SECONDS or audio is None:
+            if joined:
+                pass  # part of another shortcut (or the wake hotkey), not dictation
+            elif held < MIN_HOLD_SECONDS or audio is None:
                 print("  [type] too short, ignored")
             else:
                 text, _ = ears.transcribe(audio)
@@ -126,6 +139,82 @@ def hold_to_talk(ears, keys, is_down=None, typer=None, once=False):
             print(f"  [type] couldn't type it: {e!r}")
         if once:
             return
+
+
+# --- the talk hotkey: hold a chord (Ctrl+Shift) and talk; the mic is open only while it's held ---
+_MODIFIER_SIDES = {0x10: (0xA0, 0xA1), 0x11: (0xA2, 0xA3), 0x12: (0xA4, 0xA5)}
+_SIDE_OF = {side: generic for generic, sides in _MODIFIER_SIDES.items() for side in sides}
+
+
+def _chord_keys(keys) -> set[int]:
+    """The chord's keys plus their left/right (or generic) twins: these don't spoil it."""
+    out = set(keys)
+    for k in keys:
+        out.update(_MODIFIER_SIDES.get(k, ()))
+        if k in _SIDE_OF:
+            out.add(_SIDE_OF[k])
+    return out
+
+
+def _others_down(ignore: set[int]) -> bool:
+    """Any key or mouse button down that isn't part of the chord (Ctrl+Shift+T, a shift-click...)."""
+    return any(vk not in ignore and _is_down(vk) for vk in range(0x01, 0xFF) if vk not in (0x07, 0xFF))
+
+
+def start_wake_hotkey(on_down, on_up, spec: str = None) -> threading.Thread | None:
+    """Hold-to-talk on WAKE_HOTKEY, on a background thread: on_down() when it's pressed on its own,
+    on_up(cancelled) when it's let go (see watch_chord). None if it's "off" or not on Windows.
+    Raises ValueError on a typo."""
+    spec = config.WAKE_HOTKEY if spec is None else spec
+    keys = parse_hotkey(spec, "WAKE_HOTKEY")
+    if not keys:
+        return None
+    if sys.platform != "win32":
+        print("  [ears] the talk hotkey only works on Windows for now")
+        return None
+    t = threading.Thread(target=watch_chord, args=(keys, on_down, on_up), daemon=True, name="talk-hotkey")
+    t.start()
+    print(f"  [ears] hold {spec} and talk to me")
+    return t
+
+
+def watch_chord(keys, on_down, on_up, is_down=None, others_down=None, once=False):
+    """Hold-to-talk on a chord: on_down() as soon as every key in `keys` is down (with no other key), and
+    on_up(cancelled) when any of them is let go. cancelled is True when another key joined in while it was
+    held (Ctrl+Shift+T, Ctrl+Shift+Esc: a shortcut, not talking) or it was only a tap."""
+    is_down = is_down or _is_down
+    if others_down is None:
+        ignore = _chord_keys(keys)
+        others_down = lambda: _others_down(ignore)  # noqa: E731
+    while True:
+        while not all(is_down(k) for k in keys):
+            time.sleep(_POLL)
+        if others_down():  # another key was already down: some other shortcut
+            while any(is_down(k) for k in keys):
+                time.sleep(_POLL)
+            if once:
+                return
+            continue
+        t0 = time.monotonic()
+        if _safely(on_down):
+            spoiled = False
+            while all(is_down(k) for k in keys):
+                spoiled = spoiled or others_down()
+                time.sleep(_POLL)
+            _safely(on_up, spoiled or time.monotonic() - t0 < MIN_HOLD_SECONDS)
+        while any(is_down(k) for k in keys):  # fully let go before the next press
+            time.sleep(_POLL)
+        if once:
+            return
+
+
+def _safely(fn, *args) -> bool:
+    try:
+        fn(*args)
+        return True
+    except Exception as e:  # the hotkey must keep working for the rest of the session
+        print(f"  [ears] talk hotkey: {e!r}")
+        return False
 
 
 # --- Windows clipboard + keyboard (ctypes, no extra packages) ---

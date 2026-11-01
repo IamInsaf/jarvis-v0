@@ -48,7 +48,7 @@ class SileroTest(unittest.TestCase):
 
     def test_recording_ends_after_the_speech(self):
         e = ears.Ears.__new__(ears.Ears)
-        e.q, e.vad = queue.Queue(), vad.SpeechDetector()
+        e.q, e.vad, e.stream = queue.Queue(), vad.SpeechDetector(), "open"
         silence = np.zeros(int(ears.RATE * 3), dtype=np.int16)
         for f in frames(np.concatenate([silence[:ears.RATE // 2], self.speech, silence])):
             e.q.put(f)
@@ -63,7 +63,7 @@ class SileroTest(unittest.TestCase):
 class StopEarlyTest(unittest.TestCase):
     def test_stop_ends_the_recording(self):
         e = ears.Ears.__new__(ears.Ears)
-        e.q, e.vad = queue.Queue(), vad.SpeechDetector(loudness_only=True)
+        e.q, e.vad, e.stream = queue.Queue(), vad.SpeechDetector(loudness_only=True), "open"
         for _ in range(50):
             e.q.put(np.zeros(ears.FRAME, dtype=np.int16))
         calls = []

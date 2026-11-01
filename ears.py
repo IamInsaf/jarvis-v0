@@ -1,4 +1,5 @@
-"""Ears: always-on wake word + record until silence + local Whisper transcription.
+"""Ears: wake word + record until silence + local Whisper transcription. Normally the mic is open only
+while WAKE_HOTKEY is held (hold to talk); "activate voice mode" keeps it open for the wake word.
 Nothing here touches the internet (models download once on first run)."""
 import os
 import queue
@@ -31,7 +32,8 @@ class Heard(NamedTuple):
     """Why JARVIS is listening: "wake" (hey Jarvis: say "Yes, sir?" then listen), "name" (facing the
     camera, said "Jarvis ..."), "gesture" (facing the camera, holding a hand sign), or "typed" (a request
     was typed into the orb's chat bar instead: take it from hud.take_typed()). For name and
-    gesture, text is what was already said (without the name); "" means nothing came after the name."""
+    gesture, text is what was already said (without the name); "" means nothing came after the name.
+    "hotkey": said while holding WAKE_HOTKEY; text and audio are what was said."""
     how: str
     gesture: str | None = None
     text: str = ""
@@ -107,6 +109,12 @@ def load_wake_model() -> Model:
 
 
 class Ears:
+    stream = None       # the open mic, or None in standby
+    standby = False     # the talk hotkey is running: outside voice mode the mic is only on while it's held
+    voice_mode = False  # "activate voice mode": the mic stays on and "hey Jarvis" works, the old way
+    ptt_frames = None   # while the talk hotkey is held, the mic's audio goes here
+    ptt_held = threading.Event()  # (replaced per instance in __init__)
+
     def __init__(self):
         self.wake = load_wake_model()
         self.stt = WhisperModel(config.WHISPER_MODEL, device=config.WHISPER_DEVICE, compute_type="int8")
@@ -114,14 +122,94 @@ class Ears:
         self.vad = SpeechDetector()  # when someone is talking, as opposed to just noise
         self.q: queue.Queue = queue.Queue()
         self.tap: list | None = None  # while set, mic audio goes here instead of to self.q (fingers.py)
-        self.stream = sd.InputStream(samplerate=RATE, channels=1, dtype="int16",
-                                     blocksize=FRAME, callback=self._on_audio)
-        self.stream.start()
+        self.ptt_held = threading.Event()
+        self.ptt_audio: queue.Queue = queue.Queue()  # recordings from the talk hotkey, for the voice loop
+        self.mic_lock = threading.Lock()
+
+    @property
+    def mic_on(self) -> bool:
+        return self.stream is not None
+
+    def open_mic(self):
+        with self.mic_lock:
+            if self.stream is not None:
+                return
+            stream = sd.InputStream(samplerate=RATE, channels=1, dtype="int16",
+                                    blocksize=FRAME, callback=self._on_audio)
+            stream.start()
+            self.stream = stream
+        print("  [ears] mic on")
+        self.flush()
+        hud.info(mic=True)
+
+    def close_mic(self):
+        """Standby: the mic is closed (Windows' mic light goes off) until the talk hotkey is held."""
+        with self.mic_lock:
+            stream, self.stream = self.stream, None
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception as e:  # a vanished headset mustn't take JARVIS down with it
+                print(f"  [ears] closing the mic: {e!r}")
+            print("  [ears] mic off (standby)")
+        self.flush()
+        hud.info(mic=False)
+        hud.state("standby")
+
+    def ptt_down(self):
+        """The talk hotkey went down (on its own thread): record until it's let go."""
+        self.ptt_frames = []
+        self.ptt_held.set()
+        self.open_mic()
+        hud.state("listening")
+        print("  [ears] listening... let go when you're done")
+
+    def ptt_up(self, cancelled: bool):
+        """The talk hotkey was let go: hand the recording to the voice loop (unless it was a shortcut like
+        Ctrl+Shift+T, or a tap) and, outside voice mode, close the mic again."""
+        frames, self.ptt_frames = self.ptt_frames, None
+        self.ptt_held.clear()
+        if self.voice_mode:
+            hud.state("idle")
+        else:
+            self.close_mic()
+        if cancelled or not frames:
+            print("  [ears] talk hotkey: a shortcut or a tap, ignored")
+            return
+        self.ptt_audio.put(np.concatenate(frames))
+
+    def wait_ptt(self, timeout: float, stop=None) -> tuple[str, np.ndarray | None]:
+        """What was said with the talk hotkey in the next `timeout` seconds (longer while it's held), as
+        (text, audio); ("", None) if nothing. `stop()` true gives up early (a YES clicked instead)."""
+        end = time.monotonic() + timeout
+        while True:
+            if stop is not None and stop():
+                return "", None
+            try:
+                audio = self.ptt_audio.get(timeout=0.1 if timeout else 0.001)
+            except queue.Empty:
+                if time.monotonic() >= end and not self.ptt_held.is_set():
+                    return "", None
+                continue
+            hud.state("thinking")
+            return self._transcribe(audio)
+
+    def _take_ptt(self, wait: float) -> "Heard | None":
+        text, audio = self.wait_ptt(wait)
+        if audio is not None and not text:
+            print("  [ears] talk hotkey: didn't catch anything")
+        return Heard("hotkey", None, text, audio) if text else None
 
     def _on_audio(self, indata, frames, t, status):
-        tap = self.tap
         frame = indata[:, 0].copy()
-        (self.q.put if tap is None else tap.append)(frame)
+        ptt, tap = self.ptt_frames, self.tap
+        if ptt is not None:
+            ptt.append(frame)
+        elif tap is not None:
+            tap.append(frame)
+        else:
+            self.q.put(frame)
         hud.level("mic", _rms(frame) / (config.SILENCE_RMS * 4))  # speech threshold ≈ a quarter of the bar
 
     def start_tap(self):
@@ -156,17 +244,38 @@ class Ears:
         """Wait until someone wants JARVIS: "hey Jarvis" anywhere, or, facing the camera with the mouth
         moving, speech that starts with "Jarvis" or comes with a hand sign. Facing the camera and
         talking with neither (a phone call, someone in the room) is ignored without a sound.
-        `typed()`, checked every frame, ends the wait with Heard("typed") when it's true."""
+        `typed()`, checked every frame, ends the wait with Heard("typed") when it's true.
+        Anything said while holding the talk hotkey comes back as Heard("hotkey", text=..., audio=...);
+        in standby (mic closed) that and typing are the only ways in."""
         on_camera = eyes is not None and (config.GESTURE_TO_TALK or config.NAME_ON_CAMERA)
-        hud.state("idle")
         while True:
+            if not self.mic_on or self.ptt_held.is_set():
+                if not self.ptt_held.is_set():
+                    hud.state("standby")
+                while True:
+                    if typed is not None and typed():
+                        return Heard("typed")
+                    if heard := self._take_ptt(0.1):
+                        return heard
+                    if self.mic_on and not self.ptt_held.is_set() and self.ptt_audio.empty():
+                        break  # voice mode: listen for the wake word again
+            if heard := self._take_ptt(0):
+                return heard
+            hud.state("idle")
             self.flush()
             preroll: deque = deque(maxlen=PREROLL_FRAMES)
             loud, how, gesture = 0, None, None
             while how is None:
-                frame = self.q.get()
+                try:
+                    frame = self.q.get(timeout=0.1)
+                except queue.Empty:
+                    frame = None
                 if typed is not None and typed():
                     return Heard("typed")
+                if not self.mic_on or self.ptt_held.is_set() or not self.ptt_audio.empty():
+                    break  # the talk hotkey (or voice mode going off): handled at the top
+                if frame is None:
+                    continue
                 preroll.append(frame)
                 scores = self.wake.predict(frame)
                 if max(scores.values()) >= config.WAKE_THRESHOLD:
@@ -181,6 +290,8 @@ class Ears:
                     how = "gesture"
                 elif config.NAME_ON_CAMERA:
                     how = "name"
+            if how is None:  # the talk hotkey, or the mic closed: back to the top
+                continue
             text, audio = self._transcribe(self._record(0, frames=list(preroll)))
             rest = without_name(text)
             if how == "gesture" and text:
@@ -198,9 +309,12 @@ class Ears:
 
     def watch_for_interrupt(self, done, barge: "BargeIn | None" = None) -> str | None:
         """Poll the mic until `done()` while JARVIS speaks. Returns "wake" for the wake word, "voice" if
-        `barge` heard the user start talking over it (see after_barge), None if nobody interrupted."""
+        `barge` heard the user start talking over it (see after_barge), "hotkey" if the talk hotkey is
+        held (what's said comes from wait_for_attention), None if nobody interrupted."""
         self.flush()
         while not done():
+            if self.ptt_held.is_set():
+                return "hotkey"
             try:
                 frame = self.q.get(timeout=0.08)
             except queue.Empty:
@@ -212,6 +326,8 @@ class Ears:
     def heard_interrupt(self, barge: "BargeIn | None" = None) -> str | None:
         """Like watch_for_interrupt, but only looks at the mic audio queued since the last look, without
         waiting: for while JARVIS is busy writing the next clause and can't sit and watch."""
+        if self.ptt_held.is_set():
+            return "hotkey"
         while True:
             try:
                 frame = self.q.get_nowait()
@@ -243,7 +359,10 @@ class Ears:
 
     def _record(self, wait: float, frames: list | None = None, stop=None):
         """Record until silence. `frames` is audio already heard (pre-roll), which counts as started.
-        `stop()`, checked every frame, gives up early with None (a YES clicked on the HUD instead)."""
+        `stop()`, checked every frame, gives up early with None (a YES clicked on the HUD instead).
+        None at once in standby: there's no audio coming."""
+        if not self.mic_on:
+            return None
         frames = frames or []
         silent, started = 0.0, bool(frames)
         t0, frame_sec = time.time(), FRAME / RATE
@@ -251,7 +370,12 @@ class Ears:
         for frame in frames:  # the pre-roll primes the detector
             self.vad.probability(frame)
         while True:
-            frame = self.q.get()
+            try:
+                frame = self.q.get(timeout=0.5)
+            except queue.Empty:  # the mic went away
+                if not self.mic_on:
+                    return None
+                continue
             if stop is not None and stop():
                 return None
             frames.append(frame)

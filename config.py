@@ -35,6 +35,10 @@ WAKE_THRESHOLD = float(os.getenv("WAKE_THRESHOLD", "0.5"))   # lower it (debug_w
 WAKE_VERIFIER = os.getenv("WAKE_VERIFIER", "data/wake_verifier.pkl")
 # with the verifier, hits from this score up are checked against your voice (and WAKE_THRESHOLD applies to that)
 WAKE_VERIFIER_THRESHOLD = float(os.getenv("WAKE_VERIFIER_THRESHOLD", "0.2"))
+# hold to talk: the mic is open only while this is held; let go and JARVIS answers. Same key names as
+# TYPE_HOTKEY; "off" = always voice mode (mic on, "hey Jarvis" any time). "Activate voice mode" switches by voice
+WAKE_HOTKEY = os.getenv("WAKE_HOTKEY", "ctrl+shift")
+VOICE_MODE_AT_START = os.getenv("VOICE_MODE_AT_START", "false").lower() == "true"  # true = start in voice mode
 VOICEPRINT_DIR = os.getenv("VOICEPRINT_DIR", "data/voiceprints")  # enrolled speaker voiceprints
 VOICE_ID_THRESHOLD = float(os.getenv("VOICE_ID_THRESHOLD", "0.75"))  # cosine similarity to match a speaker
 # short phrases score lower: keep a speaker recognized in the last few minutes down to this score

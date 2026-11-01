@@ -52,6 +52,14 @@ DONE = re.compile(r"(?:(?:ok(?:ay)?|no|great|cool|perfect|good|nice|alright)[, ]
 STOP = re.compile(r"(?:(?:ok(?:ay)?|jarvis|no|alright)[, ]*)*(?:stop(?: (?:talking|there|it))?|quiet|be quiet|"
                   r"shush|shh+|hush|enough|that'?s enough|shut up|hold on|wait|pause|silence)"
                   r"(?:[, ]*(?:please|jarvis|sir|thanks?(?: you)?))*")
+# "activate voice mode": the mic stays on and "hey Jarvis" works; "voice mode off": back to holding Ctrl+Shift
+_VOICE = r"(?:voice|voices|wake word|always on|always listening|hands free|hands-free)"
+VOICE_ON = re.compile(rf"(?:activate|enable|start|turn on|switch on|switch to|go to|go into|back to|use|enter) "
+                      rf"(?:the )?{_VOICE} mode|{_VOICE} mode(?: on| activate| activated| please)?")
+VOICE_OFF = re.compile(rf"(?:deactivate|disable|stop|end|exit|leave|turn off|switch off|cancel|close) "
+                       rf"(?:the )?{_VOICE} mode|{_VOICE} mode (?:off|stop|done|over)|"
+                       r"(?:switch to |go to |(?:go )?back to |use )?(?:push to talk|push-to-talk|hold to talk|hold mode)"
+                       r"(?: mode)?")
 _ALWAYS_GHOSTS = {"you", "thanks for watching", "thank you for watching", "uh", "um", "hmm", "the", "and"}
 _WHISPER_GHOSTS = _ALWAYS_GHOSTS | {"thank you", "bye", "so", "okay", "oh", "ah", "i"}
 
@@ -94,6 +102,14 @@ def run_voice(memory, camera: bool = True):
         fingers.start_hotkey(ears)  # hold right Ctrl (TYPE_HOTKEY), speak, let go: typed into any app
     except ValueError as e:
         print(f"  [type] hotkey off: {e}")
+    global standby
+    try:
+        # hold Ctrl+Shift (WAKE_HOTKEY) and talk: the mic is open only while it's held
+        standby = fingers.start_wake_hotkey(ears.ptt_down, ears.ptt_up) is not None
+    except ValueError as e:
+        print(f"  [ears] talk hotkey off, so it's voice mode all the time: {e}")
+    ears.standby = standby
+    set_voice_mode(ears, not standby or config.VOICE_MODE_AT_START)
 
     def confirm(q):
         qid = hud.ask(q)  # also answerable with a click on the HUD or the orb
@@ -107,8 +123,14 @@ def run_voice(memory, camera: bool = True):
             for _ in range(3):  # silence or a mumble isn't a "no": ask again rather than throw work away
                 if clicked():
                     break
-                # "yes" said over the question counts; otherwise a yes/no after a long question takes a moment
-                reply, _ = ears.after_barge() if how == "voice" else ears.listen(wait=8, stop=clicked)
+                # "yes" said over the question counts; otherwise a yes/no after a long question takes a moment.
+                # Outside voice mode the answer comes with the talk hotkey held (or a click)
+                if how == "voice":
+                    reply, _ = ears.after_barge()
+                elif ears.mic_on and how != "hotkey":
+                    reply, _ = ears.listen(wait=8, stop=clicked)
+                else:
+                    reply, _ = ears.wait_ptt(12, stop=clicked)
                 how = None
                 if clicked():
                     break
@@ -132,7 +154,7 @@ def run_voice(memory, camera: bool = True):
     brain = Brain(memory, confirm, mouth.say)
     guard = brain.tools.focus  # its reminders are said here, between conversations, never over one
     reminder_due = guard.has_prompt if guard else (lambda: False)
-    mouth.say(f"Online and ready, {config.USER_TITLE}.")
+    mouth.say(f"Online and ready, {config.USER_TITLE}. {wake_hint().capitalize()} when you need me.")
     woken = False
     barged = False  # the user talked over the last reply: what they said is the next request
     follow_up = 0  # seconds to keep listening without the wake word after a reply; 0 = wait for it
@@ -170,8 +192,10 @@ def run_voice(memory, camera: bool = True):
             if heard and heard.how == "typed":
                 continue  # taken at the top of the loop, like a focus reminder that came up
             text, audio = (heard.text, heard.audio) if heard else ("", None)
-            if heard and heard.how != "wake":
+            if heard and heard.how not in ("wake", "hotkey"):
                 print(f"  [eyes] {heard.how}" + (f" ({heard.gesture})" if heard.gesture else ""))
+            if not text and heard and heard.how == "hotkey":
+                continue  # nothing caught while it was held
             if not text:  # the wake word, or just "Jarvis" on its own
                 how = mouth.say(f"Yes, {config.USER_TITLE}?")
                 text, audio = ears.after_barge() if how == "voice" else ears.listen(stop=hud.has_typed)
@@ -189,13 +213,18 @@ def run_voice(memory, camera: bool = True):
         hud.node("voice", speaker)
         said = text.lower().strip(" .!?,")
         if said in SLEEP_WORDS:
-            mouth.say(f"Going quiet, {config.USER_TITLE}. Say my name when you need me.")
+            if standby:
+                set_voice_mode(ears, False)
+            mouth.say(f"Going quiet, {config.USER_TITLE}. {wake_hint().capitalize()} when you need me.")
             continue
         if (on := eyes_command(said)) is not None:
             mouth.say(eyes_switch(eyes, on))
             continue
         if (on := pov_command(said)) is not None:
             mouth.say(pov_switch(eyes, on))
+            continue
+        if (on := voice_mode_command(said)) is not None:
+            mouth.say(voice_mode_switch(ears, on))
             continue
         if TYPE_START.fullmatch(said):
             type_mode(ears, mouth)
@@ -213,10 +242,10 @@ def run_voice(memory, camera: bool = True):
         if interrupted:
             hud.emit("barge", how=interrupted)
         asked = answer.rstrip().endswith("?")
-        if interrupted == "palm":  # told to stop: no follow-up window either
+        if interrupted in ("palm", "hotkey"):  # told to stop, or talking with the hotkey: no follow-up window
             asked = False
             continue
-        if not (woken or barged) and config.FOLLOW_UP:
+        if not (woken or barged) and config.FOLLOW_UP and ears.mic_on:
             # a question waits for its answer; anything else leaves a moment for "and also..."
             follow_up = config.FOLLOW_UP_QUESTION_SECONDS if asked else config.FOLLOW_UP_SECONDS
 
@@ -225,6 +254,9 @@ def type_mode(ears, mouth):
     """Type everything said into the window that has focus, until "type mode done"."""
     import fingers
     mouth.say(f"Typing, {config.USER_TITLE}. Say \"type mode done\" when you're finished.")
+    opened = not ears.mic_on  # outside voice mode the mic stays on just for type mode
+    if opened:
+        ears.open_mic()
     ears.flush()  # not my own voice
     hud.state("dictating")
     try:
@@ -233,7 +265,10 @@ def type_mode(ears, mouth):
         mouth.say(f"I couldn't type there, {config.USER_TITLE}. {e}")
         return
     finally:
-        hud.state("idle")
+        if opened and not ears.voice_mode:
+            ears.close_mic()
+        else:
+            hud.state("idle")
     mouth.say(f"Type mode off, {config.USER_TITLE}." if how == "done" else
               f"It went quiet, so I've stopped typing, {config.USER_TITLE}.")
 
@@ -287,7 +322,53 @@ def eyes_switch(eyes, on: bool) -> str:
     if not on:
         hud.pov(False)  # nothing left to show
     return (f"Watching again, {config.USER_TITLE}." if on else
-            f"Eyes closed, {config.USER_TITLE}. The camera is free; say \"hey Jarvis\" when you need me.")
+            f"Eyes closed, {config.USER_TITLE}. The camera is free; {wake_hint()} when you need me.")
+
+
+standby = False     # the talk hotkey is running: outside voice mode, the mic is on only while it's held
+voice_mode = False  # the mic stays on and "hey Jarvis" works (always, without the hotkey)
+
+
+def hotkey_name() -> str:
+    return "+".join(k.strip().title() for k in config.WAKE_HOTKEY.split("+"))
+
+
+def wake_hint() -> str:
+    """How to get JARVIS's attention: "hold Ctrl+Shift and talk", or "say "hey Jarvis"" in voice mode."""
+    if standby and not voice_mode:
+        return f"hold {hotkey_name()} and talk"
+    return 'say "hey Jarvis"'
+
+
+def set_voice_mode(ears, on: bool):
+    """Voice mode on: the mic stays open for the wake word. Off: closed until the talk hotkey is held."""
+    global voice_mode
+    voice_mode = ears.voice_mode = on
+    ears.open_mic() if on else ears.close_mic()
+    hud.info(mode="voice" if on else "hold to talk")
+
+
+def voice_mode_command(said: str) -> bool | None:
+    """True for "activate voice mode", False for "voice mode off" / "push to talk", None for anything else."""
+    t = " ".join(re.sub(r"[^\w' -]", " ", said.lower()).split())
+    t = _POLITE_END.sub("", _POLITE_START.sub("", t))
+    if VOICE_OFF.fullmatch(t):
+        return False
+    if VOICE_ON.fullmatch(t):
+        return True
+    return None
+
+
+def voice_mode_switch(ears, on: bool) -> str:
+    if not standby:
+        return (f"Voice mode is always on, {config.USER_TITLE}: the {hotkey_name()} hotkey isn't available, "
+                "so there's no hold to talk.")
+    if on == voice_mode:
+        return f"{'Voice mode is already on' if on else 'Already on hold to talk'}, {config.USER_TITLE}."
+    set_voice_mode(ears, on)
+    if on:
+        return f"Voice mode on, {config.USER_TITLE}. Say \"hey Jarvis\" whenever you need me."
+    return f"Voice mode off, {config.USER_TITLE}. Hold {hotkey_name()} and talk when you need me."
 
 
 def is_echo(text: str, last_reply: str) -> bool:
@@ -332,6 +413,26 @@ def start_orb(url: str):
     atexit.register(orb.terminate)
 
 
+_instance = None  # the named mutex, held for as long as JARVIS runs
+
+
+def already_running(name: str = r"Local\JARVIS-v0-voice") -> bool:
+    """True if another JARVIS (voice) is already running, so a second click on the desktop icon doesn't start
+    a second one that answers too. Windows only (a named mutex, freed by Windows when the process ends)."""
+    global _instance
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateMutexW.restype = ctypes.c_void_p
+    handle = k32.CreateMutexW(None, False, name)
+    if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+        k32.CloseHandle(ctypes.c_void_p(handle))
+        return True
+    _instance = handle
+    return False
+
+
 def log_to_file_if_windowless():
     """Started by pythonw (the login shortcut from install_startup.ps1) there's no console: print() would
     go nowhere and a crash would leave no trace, so both go to data/jarvis.log instead."""
@@ -355,6 +456,9 @@ if __name__ == "__main__":
     if args.focus_test:
         config.FOCUS_TEST_MODE = True
         focus_probe()
+    if not args.text and already_running():
+        print("JARVIS is already running (the orb shows it). Not starting a second one.")
+        sys.exit(0)
     mem = Memory(config.DB_PATH)
     brains.load_saved()  # the model last switched to by voice, over OLLAMA_MODEL in .env
     if config.HUD_ENABLED and (url := hud.start()):

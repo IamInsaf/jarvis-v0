@@ -75,7 +75,7 @@ class HotkeyTest(unittest.TestCase):
     def hold(self, seconds, transcript="Hello world."):
         """Press the hotkey, speak for `seconds`, let go; returns what got typed."""
         e = ears.Ears.__new__(ears.Ears)
-        e.tap = None
+        e.tap, e.stream = None, "open"
         e.transcribe = lambda audio: (transcript, audio)
         clock = iter([False, True] + [True] * int(seconds / fingers._POLL) + [False] * 10)
 

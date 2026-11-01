@@ -1,6 +1,7 @@
 # JARVIS v0 — private, local-first voice assistant
 
-Say **"Hey Jarvis"**, ask anything, and it answers out loud. The brain, memory, voice and
+Hold **Ctrl+Shift**, ask anything, let go, and it answers out loud (the mic is off the rest of the time; see
+[Hold to talk](#hold-to-talk-or-voice-mode)). The brain, memory, voice and
 speech recognition all run on your own machine. The internet is only used for private web
 search (via your own SearXNG) and, if you turn it on, an anonymized cloud model for hard questions.
 
@@ -70,7 +71,7 @@ It's bound to `127.0.0.1` only, so nothing else on your network can use it.
 **5. Run**
 ```bash
 python jarvis.py --text   # test the brain by typing first
-python jarvis.py          # then voice: say "Hey Jarvis"
+python jarvis.py          # then voice: hold Ctrl+Shift and talk
 ```
 
 Try: "Hey Jarvis, remember that I study mechanical engineering" → later "what do I study?"
@@ -85,15 +86,39 @@ British voices, so other accents can score under its 0.5 cut-off.
    but only in your voice, so the TV and other people don't set it off. Want to re-record? Just run it again.
    `--retrain` retrains on the last recordings, e.g. after changing `WAKE_VERIFIER_THRESHOLD`.
 
-**6. Start with Windows** (optional)
+**6. Start with Windows, or from a desktop icon** (optional)
 ```powershell
-.\install_startup.ps1          # adds JARVIS to your Startup folder
-.\install_startup.ps1 -Remove  # takes it out again
+.\install_startup.ps1                  # adds JARVIS to your Startup folder
+.\install_startup.ps1 -Remove          # takes it out again
+.\install_startup.ps1 -Desktop         # a JARVIS icon on the desktop: click it to start JARVIS
+.\install_startup.ps1 -Desktop -Remove # takes the icon off again
 ```
 When you sign in, JARVIS starts with no console window; the orb in the corner shows it's running, and its output
 goes to `data\jarvis.log`. Ollama already starts with Windows. For web search, turn on "Start Docker Desktop when you
-sign in" in Docker Desktop's settings (JARVIS works without it, just without search). To stop it, end `pythonw.exe`
-in Task Manager ("shut down" only makes it go quiet). Don't also run `python jarvis.py` by hand while it's running, or two of them will answer.
+sign in" in Docker Desktop's settings (JARVIS works without it, just without search). There's only ever one JARVIS:
+clicking the icon (or running `python jarvis.py`) while it's already running does nothing.
+
+**Kill switch:** to shut JARVIS down completely, click the red ⏻ in the orb's chat bar (right-click the orb), or
+"⏻ Shut down JARVIS" in its ⋯ menu, or **SHUT DOWN** at the top right of the HUD. It asks first, then the voice
+loop, the orb and the HUD all close. Start it again from the desktop icon. (Saying "shut down" only makes it go quiet.)
+
+## Hold to talk, or voice mode
+JARVIS starts in **hold to talk**: the mic is closed (Windows' mic light is off) and nothing you say is heard,
+not even "Hey Jarvis". The orb and the HUD show **STANDBY**.
+- **Hold Ctrl+Shift and talk, then let go.** The mic is open only while you hold the keys; when you let go,
+  JARVIS answers. Start talking a moment after pressing, as the mic takes a split second to open.
+- Holding Ctrl+Shift while JARVIS is talking stops the reply, so you can say the next thing straight away.
+- Ctrl+Shift+T and other shortcuts don't count: if another key joins in, the recording is thrown away.
+- If JARVIS asks a yes/no question, hold Ctrl+Shift to answer, or click YES / NO on the orb or the HUD.
+- **Say "activate voice mode"** (hold Ctrl+Shift to say it) for the old way: the mic stays on, "Hey Jarvis",
+  follow-ups, talking over a reply and hold-right-Ctrl dictation all work. **"Voice mode off"** (or "push to
+  talk", or "go to sleep") goes back to hold to talk. Ctrl+Shift keeps working in voice mode too.
+- "Type mode start" opens the mic for type mode and closes it again afterwards.
+- Settings: `WAKE_HOTKEY` (same key names as `TYPE_HOTKEY`; `off` = always voice mode) and
+  `VOICE_MODE_AT_START=true` to start in voice mode.
+- Typing into the orb's chat bar works with the mic off too.
+- Have more than one keyboard language? Windows switches language on Ctrl+Shift. Turn that off in Settings >
+  Time & language > Typing > Advanced keyboard settings > Input language hot keys, or pick another `WAKE_HOTKEY`.
 
 ## HUD: watch JARVIS think
 While `python jarvis.py` runs (voice or `--text`), open **http://127.0.0.1:8766** — F11 on a second
@@ -116,7 +141,7 @@ With the voice loop running, a small orb sits in the bottom-right corner over ev
 the HUD, pulsing as you and JARVIS speak, with captions of what was heard and said beside it. When JARVIS asks
 a yes/no question it shows YES / NO buttons too. Drag it anywhere (it remembers), click it to open the HUD,
 right-click to type instead of talking: a chat bar opens above the orb, Enter sends (JARVIS answers just as if
-you'd said it, out loud and in the captions), Esc closes it, and its ⋯ button has the menu. Say or type "show me what you're
+you'd said it, out loud and in the captions), Esc closes it, its ⋯ button has the menu, and the red ⏻ beside it is the kill switch. Say or type "show me what you're
 seeing" (or "what do you see", "show your POV") and a small live camera view opens above the orb, with boxes
 round the faces and hands JARVIS is tracking, whether you're facing it and talking, and the hand sign it reads;
 "close the view" or its ✕ closes it. If the camera was off it opens just for the view and closes again after. It runs as its own process, so closing it never stops JARVIS. Settings: `ORB_ENABLED`,
@@ -124,7 +149,7 @@ round the faces and hands JARVIS is tracking, whether you're facing it and talki
 
 ## Type mode: dictate into any app (Windows)
 Like Wispr Flow, but offline and free: the same local Whisper types what you say wherever your cursor is.
-- **Hold right Ctrl**, speak, let go: it's typed at the cursor. Change the key with `TYPE_HOTKEY`
+- **Hold right Ctrl**, speak, let go: it's typed at the cursor (in voice mode, when the mic is on). Change the key with `TYPE_HOTKEY`
   (`right alt`, `f8`, `ctrl+win`...) or turn it off with `TYPE_HOTKEY=off`.
 - **"Hey Jarvis" → "type mode start"**: every phrase is typed as you say it, until you say
   **"type mode done"** (or stay quiet for `TYPE_IDLE_SECONDS`, 60 by default).

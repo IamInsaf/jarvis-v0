@@ -5,7 +5,8 @@ a question JARVIS asks out loud.
 It's its own process, started by jarvis.py (or `python orb.py [hud url]` next to a running JARVIS), and only
 reads the HUD's live event stream: closing or crashing it never touches JARVIS. Stdlib only (tkinter).
 Left-click opens the full HUD, drag moves it (the spot is remembered), right-click opens a chat bar to type a
-request instead of saying it (Enter sends, Esc closes; its ⋯ button has the menu). Ask JARVIS to show what it
+request instead of saying it (Enter sends, Esc closes; its ⋯ button has the menu, and ⏻ is the kill switch
+that shuts JARVIS down). Ask JARVIS to show what it
 sees and a small live camera view opens above the orb, with boxes round the faces and hands it's tracking."""
 import base64
 import json
@@ -22,7 +23,7 @@ from pathlib import Path
 STATES = {
     "idle": ((42, 212, 255), .45), "listening": ((110, 240, 255), 1.1), "thinking": ((255, 181, 71), 2.8),
     "speaking": ((175, 246, 255), 1.5), "dictating": ((93, 255, 176), 1.1), "error": ((255, 77, 94), .25),
-    "offline": ((95, 120, 135), .12), "asking": ((255, 181, 71), .9),
+    "offline": ((95, 120, 135), .12), "asking": ((255, 181, 71), .9), "standby": ((70, 104, 124), .18),
 }
 ACTIVE = {"listening", "thinking", "speaking", "dictating", "asking"}
 CAPTION_HOLD = 4.0   # seconds a caption stays after JARVIS goes quiet
@@ -161,6 +162,11 @@ def post_typed(url: str, text: str) -> bool:
     return _post(url + "/api/type", {"text": text})
 
 
+def shut_down(url: str) -> bool:
+    """The kill switch: JARVIS exits (and closes this orb with it)."""
+    return _post(url + "/api/shutdown", {})
+
+
 def _post(url: str, body: dict) -> bool:
     req = urllib.request.Request(url, data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json", "X-Jarvis": "1"}, method="POST")
@@ -206,6 +212,8 @@ class OrbWindow:
         self.menu.add_separator()
         self.menu.add_command(label="Close chat bar", command=self._close_chat)
         self.menu.add_command(label="Close orb", command=self.close)
+        self.menu.add_separator()
+        self.menu.add_command(label="⏻ Shut down JARVIS", foreground="#ff4d5e", command=self._kill)
         self.canvas.bind("<ButtonPress-1>", self._press)
         self.canvas.bind("<B1-Motion>", self._drag)
         self.canvas.bind("<ButtonRelease-1>", self._release)
@@ -285,6 +293,10 @@ class OrbWindow:
                         cursor="hand2", padx=round(8 * s))
         more.pack(side="right", fill="y")
         more.bind("<Button-1>", lambda e: self.menu.tk_popup(e.x_root, e.y_root))
+        kill = tk.Label(self.chat, text="⏻", bg=hexrgb(BG), fg="#ff4d5e", font=font, cursor="hand2",
+                        padx=round(6 * s))  # the kill switch
+        kill.pack(side="right", fill="y")
+        kill.bind("<Button-1>", lambda e: self._kill())
         self.entry.bind("<Return>", self._send_chat)
         self.entry.bind("<Escape>", lambda e: self._close_chat())
         # right above the orb's window, or below it when that's off the top of the screen
@@ -403,6 +415,15 @@ class OrbWindow:
             self.root.mainloop()
         finally:
             self.stop.set()
+
+    def _kill(self):
+        from tkinter import messagebox
+        if messagebox.askyesno("JARVIS", "Shut JARVIS down?\nStart it again from the desktop icon.",
+                               parent=self.root, icon="warning"):
+            if shut_down(self.url):
+                self.close()  # JARVIS closes the orb too; this just doesn't wait for it
+            else:
+                messagebox.showerror("JARVIS", "Couldn't reach JARVIS to shut it down.", parent=self.root)
 
     def close(self):
         self.stop.set()

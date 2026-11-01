@@ -117,7 +117,8 @@ class FakeEyes:
 def fake_ears(frames, transcripts):
     """Ears with a scripted mic and Whisper: no audio device or models."""
     e = ears.Ears.__new__(ears.Ears)
-    e.q = queue.Queue()
+    e.q, e.stream = queue.Queue(), "open"  # the mic is on (voice mode)
+    e.ptt_audio = queue.Queue()
     for f in frames:
         e.q.put(f)
     e.wake = type("Wake", (), {"predict": lambda self, f: {"hey_jarvis": 0.9 if f is WAKE else 0.0},
